@@ -8,11 +8,8 @@ from app.exam.hybrid_nlp import HybridNLPEngine
 from app.exam.bloom_classifier import BloomClassifier
 from app.exam.tos_generator import TOSGenerator
 from app.exam.randomizer import QuestionRandomizer
-from app.exam.t5_generator import T5QuestionGenerator
 from app.utils.logger import get_logger
 
-# AI Enhancement Imports
-import spacy
 import numpy as np
 
 # Compatibility shim: older sentence-transformers (2.x) expects `cached_download`
@@ -26,9 +23,6 @@ except Exception:
     # If huggingface_hub is missing or behaves unexpectedly, continue;
     # sentence_transformers import will raise a clearer error.
     pass
-
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline
 
 # NLTK imports 
 from nltk.tokenize import sent_tokenize, word_tokenize
@@ -91,6 +85,7 @@ class ExamGenerator:
         """Return the T5 question generator (lazy-loaded)."""
         if self.t5_generator is None:
             logger.info("Initializing T5 generator...")
+            from app.exam.t5_generator import T5QuestionGenerator
             self.t5_generator = T5QuestionGenerator(model_name=os.getenv("AI_T5_MODEL", "t5-small"))
         return self.t5_generator
 
@@ -100,6 +95,8 @@ class ExamGenerator:
         """Lazy load spaCy NLP pipeline with advanced features"""
         if self._spacy_nlp is None:
             try:
+                import spacy
+
                 logger.info("🔧 Loading spaCy NLP pipeline...")
                 # Try to load configured model (default: en_core_web_md)
                 _spacy_model    = os.getenv("AI_SPACY_MODEL", "en_core_web_md")
@@ -127,6 +124,8 @@ class ExamGenerator:
         """Lazy load sentence transformer for semantic similarity"""
         if self._sentence_transformer is None:
             try:
+                from sentence_transformers import SentenceTransformer
+
                 logger.info("🔧 Loading Sentence Transformer...")
                 # Use a lightweight but effective model
                 self._sentence_transformer = SentenceTransformer('all-MiniLM-L6-v2')
@@ -140,6 +139,8 @@ class ExamGenerator:
         """Lazy load question-answering pipeline for context extraction"""
         if self._qa_pipeline is None:
             try:
+                from transformers import pipeline
+
                 logger.info("🔧 Loading QA pipeline...")
                 self._qa_pipeline = pipeline(
                     "question-answering",

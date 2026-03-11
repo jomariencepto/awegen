@@ -259,6 +259,37 @@ def get_exams_by_teacher(teacher_id):
             "success": False,
             "message": "Failed to get exams"
         }), 500
+
+
+@exam_bp.route("/teacher/<int:teacher_id>/summary", methods=["GET"])
+@jwt_required()
+def get_teacher_dashboard_summary(teacher_id):
+    """Get lightweight dashboard stats and recent exams for a teacher."""
+    try:
+        current_user_id = int(get_jwt_identity())
+        current_user = User.query.get(current_user_id)
+
+        if not current_user:
+            return jsonify({
+                "success": False,
+                "message": "User not found"
+            }), 404
+
+        if current_user_id != teacher_id and current_user.role.lower() != "admin":
+            return jsonify({
+                "success": False,
+                "message": "Unauthorized"
+            }), 403
+
+        result, status_code = ExamService.get_teacher_dashboard_summary(teacher_id)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error in get_teacher_dashboard_summary: {str(e)}")
+        return jsonify({
+            "success": False,
+            "message": "Failed to get dashboard summary"
+        }), 500
         
         
 # =========================

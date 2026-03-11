@@ -28,4 +28,4 @@ COPY . /app
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "python docker_bootstrap.py && python main.py"]
+CMD ["sh", "-c", "python docker_bootstrap.py && gunicorn --bind 0.0.0.0:5000 --workers=${GUNICORN_WORKERS:-2} --threads=${GUNICORN_THREADS:-4} --timeout=${GUNICORN_TIMEOUT:-1200} main:app"]

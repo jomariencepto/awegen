@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
@@ -8,6 +8,7 @@ import api from '../../utils/api';
 
 function AdminDashboard() {
   const { currentUser } = useAuth();
+  const hasFetched = useRef(false);
   const [stats, setStats] = useState({
     totalExams: 0,
     totalUsers: 0,
@@ -16,23 +17,27 @@ function AdminDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchDashboardData();
-  }, []);
+    if (currentUser && !hasFetched.current) {
+      hasFetched.current = true;
+      fetchDashboardData();
+    }
+  }, [currentUser]);
 
   const fetchDashboardData = async () => {
     try {
-      const [examsRes, usersRes] = await Promise.all([
+      const [statsRes, examsRes] = await Promise.all([
+        api.get('/admin/dashboard'),
         api.get('/exams/all', {
-          params: { status: 'approved', page: 1, per_page: 100 },
+          params: { status: 'approved', page: 1, per_page: 5 },
         }),
-        api.get('/admin/users/all'),
       ]);
 
+      const dashboardStats = statsRes.data?.stats || {};
       setStats({
-        totalExams: examsRes.data.total || 0,
-        totalUsers: usersRes.data.total || 0,
+        totalExams: Number(dashboardStats.total_exams) || 0,
+        totalUsers: Number(dashboardStats.total_users) || 0,
       });
-      setRecentExams((examsRes.data.exams || []).slice(0, 5));
+      setRecentExams(examsRes.data.exams || []);
     } catch (error) {
       console.error('Error fetching dashboard data:', error);
       setStats({ totalExams: 0, totalUsers: 0 });

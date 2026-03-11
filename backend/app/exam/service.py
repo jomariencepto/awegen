@@ -7,8 +7,13 @@ from app.exam.schemas import (
     QuestionUpdateSchema, ExamSubmissionCreateSchema, ExamAnswerCreateSchema,
     ExamCategorySchema, ExamQuestionSchema, ExamSubmissionSchema, ExamAnswerSchema
 )
-from app.exam.exam_generator import ExamGenerator
 from app.exam.tos_generator import TOSGenerator
+from app.auth.models import User
+from app.notifications.models import Notification
+from app.utils.logger import get_logger
+from datetime import datetime
+from sqlalchemy import and_, or_, func
+from marshmallow import ValidationError
 import threading
 
 # Process-level ExamGenerator cache — models (spaCy, sentence-transformers, T5)
@@ -24,20 +29,30 @@ def _get_exam_generator():
     if _exam_generator_instance is None:
         with _exam_generator_lock:
             if _exam_generator_instance is None:
+                from app.exam.exam_generator import ExamGenerator
                 _exam_generator_instance = ExamGenerator()
     return _exam_generator_instance
-from app.module_processor.saved_module import SavedModuleService
-from app.auth.models import User
-from app.notifications.models import Notification
-from app.utils.logger import get_logger
-from datetime import datetime
-from sqlalchemy import and_, or_
-from marshmallow import ValidationError
-
 logger = get_logger(__name__)
 
 
 class ExamService:
+    @staticmethod
+    def _build_question_count_map(exam_ids):
+        """Return {exam_id: question_count} for the provided exam IDs."""
+        if not exam_ids:
+            return {}
+
+        rows = (
+            db.session.query(
+                ExamQuestion.exam_id,
+                func.count(ExamQuestion.question_id).label('question_count'),
+            )
+            .filter(ExamQuestion.exam_id.in_(exam_ids))
+            .group_by(ExamQuestion.exam_id)
+            .all()
+        )
+        return {row.exam_id: int(row.question_count or 0) for row in rows}
+
     @staticmethod
     def _calculate_module_question_targets(modules, total_questions):
         """Distribute total questions across modules using weighted largest remainder."""
@@ -314,6 +329,8 @@ class ExamService:
     @staticmethod
     def create_exam(exam_data, teacher_id, auto_approve=False, approver_id=None, department_id=None):
         try:
+            from app.module_processor.saved_module import SavedModuleService
+
             # Remove teacher_id from exam_data if present (it's passed separately)
             exam_data_copy = exam_data.copy()
             if 'teacher_id' in exam_data_copy:
@@ -646,12 +663,13 @@ class ExamService:
                 )
             )
             
+            question_counts = ExamService._build_question_count_map(
+                [exam.exam_id for exam in exams.items]
+            )
             exams_data = []
             for exam in exams.items:
                 exam_dict = exam.to_dict()
-                # Add question count
-                question_count = ExamQuestion.query.filter_by(exam_id=exam.exam_id).count()
-                exam_dict['question_count'] = question_count
+                exam_dict['question_count'] = question_counts.get(exam.exam_id, 0)
                 exams_data.append(exam_dict)
             
             return {
@@ -699,15 +717,14 @@ class ExamService:
             )
             
             # Build response
+            question_counts = ExamService._build_question_count_map(
+                [exam.exam_id for exam in exams.items]
+            )
             exams_list = []
             for exam in exams.items:
                 try:
                     exam_dict = exam.to_dict()
-                    
-                    # Add question count
-                    question_count = ExamQuestion.query.filter_by(exam_id=exam.exam_id).count()
-                    exam_dict['question_count'] = question_count
-                    
+                    exam_dict['question_count'] = question_counts.get(exam.exam_id, 0)
                     exams_list.append(exam_dict)
                     
                 except Exception as e:
@@ -730,6 +747,59 @@ class ExamService:
             return {
                 'success': False,
                 'message': f'Failed to get saved exams: {str(e)}'
+            }, 500
+
+    @staticmethod
+    def get_teacher_dashboard_summary(teacher_id):
+        """Return lightweight dashboard stats and recent exams for a teacher."""
+        try:
+            from app.module_processor.models import Module
+
+            base_query = Exam.query.filter_by(teacher_id=teacher_id)
+            total_exams = base_query.count()
+            pending_actions = (
+                base_query.filter(Exam.admin_status.in_(['pending', 'revision_required'])).count()
+            )
+            revision_required = (
+                base_query.filter(Exam.admin_status == 'revision_required').count()
+            )
+            total_modules = Module.query.filter(
+                Module.teacher_id == teacher_id,
+                or_(Module.is_archived == 0, Module.is_archived.is_(None))
+            ).count()
+
+            recent_exam_rows = (
+                base_query
+                .order_by(Exam.updated_at.desc(), Exam.created_at.desc(), Exam.exam_id.desc())
+                .limit(5)
+                .all()
+            )
+            question_counts = ExamService._build_question_count_map(
+                [exam.exam_id for exam in recent_exam_rows]
+            )
+
+            recent_exams = []
+            for exam in recent_exam_rows:
+                exam_dict = exam.to_dict()
+                exam_dict['question_count'] = question_counts.get(exam.exam_id, 0)
+                recent_exams.append(exam_dict)
+
+            return {
+                'success': True,
+                'stats': {
+                    'total_exams': total_exams,
+                    'total_modules': total_modules,
+                    'pending_actions': pending_actions,
+                    'revision_required': revision_required,
+                },
+                'recent_exams': recent_exams,
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting teacher dashboard summary: {str(e)}")
+            return {
+                'success': False,
+                'message': 'Failed to get dashboard summary'
             }, 500
     @staticmethod
     def update_exam(exam_id, exam_data):

@@ -38,8 +38,8 @@ services:
         condition: service_started
     environment:
       FLASK_APP: main.py
-      FLASK_ENV: ${FLASK_ENV:-development}
-      FLASK_DEBUG: "${FLASK_DEBUG:-1}"
+      FLASK_ENV: ${FLASK_ENV:-production}
+      FLASK_DEBUG: "${FLASK_DEBUG:-0}"
       SECRET_KEY: ${SECRET_KEY:-change-me-secret-key}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret-key}
       DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-change-me-db-password}@mysql:3306/${MYSQL_DATABASE:-awegen_db}
@@ -73,11 +73,8 @@ services:
     restart: unless-stopped
     depends_on:
       - backend
-    environment:
-      PORT: ${FRONTEND_PORT:-3000}
-      VITE_BACKEND_PROXY_TARGET: ${VITE_BACKEND_PROXY_TARGET:-http://backend:5000}
     ports:
-      - "${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3000}:80"
 
 volumes:
   mysql_data:

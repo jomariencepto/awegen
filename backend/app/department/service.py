@@ -113,7 +113,7 @@ class DepartmentService:
             if teacher_role:
                 # Teachers formally assigned to this department (used for exam scope)
                 teacher_ids_scope = [
-                    u.user_id for u in User.query.filter(
+                    user_id for (user_id,) in db.session.query(User.user_id).filter(
                         User.role_id == teacher_role.role_id,
                         User.department_id == department_id
                     ).all()
@@ -207,11 +207,12 @@ class DepartmentService:
             teacher_ids_scope = []
             
             if teacher_role:
-                teachers = User.query.filter_by(
-                    department_id=department_id,
-                    role_id=teacher_role.role_id
-                ).all()
-                teacher_ids_scope = [t.user_id for t in teachers]
+                teacher_ids_scope = [
+                    user_id for (user_id,) in db.session.query(User.user_id).filter(
+                        User.department_id == department_id,
+                        User.role_id == teacher_role.role_id
+                    ).all()
+                ]
                 logger.info(f"Found {len(teacher_ids_scope)} teachers in department {department_id}")
             
             query = Exam.query.filter(
@@ -266,17 +267,22 @@ class DepartmentService:
                 error_out=False
             )
             
+            teacher_ids = list({exam.teacher_id for exam in exams.items if exam.teacher_id})
+            teacher_lookup = {}
+            if teacher_ids:
+                teachers = User.query.filter(User.user_id.in_(teacher_ids)).all()
+                teacher_lookup = {
+                    teacher.user_id: (
+                        f"{teacher.first_name or ''} {teacher.last_name or ''}".strip() or "Unknown Teacher"
+                    )
+                    for teacher in teachers
+                }
+
             exam_list = []
             for exam in exams.items:
                 try:
                     exam_dict = exam.to_dict()
-                    
-                    teacher = User.query.get(exam.teacher_id)
-                    if teacher:
-                        exam_dict['teacher_name'] = f"{teacher.first_name} {teacher.last_name}"
-                    else:
-                        exam_dict['teacher_name'] = "Unknown Teacher"
-                    
+                    exam_dict['teacher_name'] = teacher_lookup.get(exam.teacher_id, "Unknown Teacher")
                     exam_list.append(exam_dict)
                     
                 except Exception as item_error:

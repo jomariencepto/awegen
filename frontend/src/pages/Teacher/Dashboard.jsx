@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Card, CardContent } from '../../components/ui/card';
@@ -18,10 +18,10 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import api from '../../utils/api';
-import { fetchAllTeacherExams, sortExamsNewestFirst } from '../../utils/exams';
 
 function TeacherDashboard() {
   const { currentUser } = useAuth();
+  const hasFetched = useRef(false);
   const [stats, setStats] = useState({
     totalExams: 0,
     totalModules: 0,
@@ -33,7 +33,8 @@ function TeacherDashboard() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && !hasFetched.current) {
+      hasFetched.current = true;
       fetchDashboardData();
     }
   }, [currentUser]);
@@ -47,8 +48,7 @@ function TeacherDashboard() {
 
     try {
       const results = await Promise.allSettled([
-        fetchAllTeacherExams(currentUser.user_id),
-        api.get(`/modules/teacher/${currentUser.user_id}`),
+        api.get(`/exams/teacher/${currentUser.user_id}/summary`),
         api.get('/notifications/unread/count'),
       ]);
 
@@ -62,28 +62,21 @@ function TeacherDashboard() {
       let unreadCount = 0;
 
       if (results[0].status === 'fulfilled') {
-        const exams = sortExamsNewestFirst(results[0].value || []);
-        const pendingCount = exams.filter((exam) => {
-          const status = String(exam.admin_status || '').toLowerCase();
-          return status === 'pending' || status === 'revision_required';
-        }).length;
-        revisionRequiredCount = exams.filter(
-          (exam) => String(exam.admin_status || '').toLowerCase() === 'revision_required'
-        ).length;
-        nextStats.totalExams = exams.length;
-        nextStats.pendingActions = pendingCount;
-        setRecentExams(exams.slice(0, 5));
+        const summaryData = results[0].value.data;
+        const summaryStats = summaryData?.stats || {};
+
+        nextStats.totalExams = Number(summaryStats.total_exams) || 0;
+        nextStats.totalModules = Number(summaryStats.total_modules) || 0;
+        nextStats.pendingActions = Number(summaryStats.pending_actions) || 0;
+        revisionRequiredCount = Number(summaryStats.revision_required) || 0;
+        setRecentExams(summaryData?.recent_exams || []);
       }
 
       if (results[1].status === 'fulfilled') {
-        const modulesData = results[1].value.data;
-        nextStats.totalModules = modulesData.total || 0;
-      }
-
-      if (results[2].status === 'fulfilled') {
-        const notificationsData = results[2].value.data;
+        const notificationsData = results[1].value.data;
         unreadCount = Number(notificationsData?.data?.unread_count) || 0;
       }
+
       // Keep revision-required visible in dashboard notifications even if unread feed is empty.
       nextStats.notifications = Math.max(unreadCount, revisionRequiredCount);
       setStats(nextStats);

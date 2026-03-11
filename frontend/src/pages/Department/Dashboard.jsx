@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
@@ -8,6 +8,7 @@ import api, { getUserRole } from '../../utils/api';
 
 function DepartmentDashboard() {
   const { currentUser } = useAuth();
+  const hasFetched = useRef(false);
   const [stats, setStats] = useState({
     pendingReviews: 0,
     totalExams: 0,
@@ -24,8 +25,11 @@ function DepartmentDashboard() {
   const userRole = getUserRole(currentUser);
 
   useEffect(() => {
-    fetchDashboardData();
-  }, []);
+    if (currentUser && !hasFetched.current) {
+      hasFetched.current = true;
+      fetchDashboardData();
+    }
+  }, [currentUser]);
 
   const fetchDashboardData = async () => {
     setLoading(true);
