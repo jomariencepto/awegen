@@ -54,6 +54,58 @@ class ExamService:
         return {row.exam_id: int(row.question_count or 0) for row in rows}
 
     @staticmethod
+    def _refresh_teacher_answer_snapshot(exam):
+        """
+        Keep the teacher-owned answer snapshot aligned with the current exam
+        questions so exports do not use stale or blank historical answers.
+        """
+        if not exam or not exam.teacher_id:
+            return
+
+        questions = (
+            ExamQuestion.query
+            .filter_by(exam_id=exam.exam_id)
+            .order_by(ExamQuestion.question_id)
+            .all()
+        )
+
+        submission = ExamSubmission.query.filter_by(
+            exam_id=exam.exam_id,
+            user_id=exam.teacher_id,
+        ).first()
+
+        if not submission:
+            submission = ExamSubmission(
+                exam_id=exam.exam_id,
+                user_id=exam.teacher_id,
+                start_time=datetime.utcnow(),
+                submit_time=datetime.utcnow(),
+                score=None,
+                total_points=0,
+                is_completed=True,
+            )
+            db.session.add(submission)
+            db.session.flush()
+
+        submission.submit_time = datetime.utcnow()
+        submission.score = None
+        submission.total_points = sum(q.points or 1 for q in questions)
+        submission.is_completed = True
+
+        ExamAnswer.query.filter_by(submission_id=submission.submission_id).delete()
+
+        for question in questions:
+            db.session.add(
+                ExamAnswer(
+                    submission_id=submission.submission_id,
+                    question_id=question.question_id,
+                    answer_text=question.correct_answer,
+                    is_correct=True,
+                    points_earned=question.points or 1,
+                )
+            )
+
+    @staticmethod
     def _calculate_module_question_targets(modules, total_questions):
         """Distribute total questions across modules using weighted largest remainder."""
         if not modules or total_questions <= 0:
@@ -1255,25 +1307,33 @@ class ExamService:
                 # Validate each question
                 schema = QuestionCreateSchema()
                 validated = schema.load(q_data)
+                normalized_correct_answer = (validated.get('correct_answer') or '').strip()
+                if not normalized_correct_answer:
+                    return {
+                        'success': False,
+                        'message': 'Correct answer is required for every question'
+                    }, 400
                 
                 # Create question
                 question = ExamQuestion(
                     exam_id=exam_id,
-                    question_text=q_data['question_text'],
-                    question_type=q_data['question_type'],
-                    difficulty_level=q_data.get('difficulty_level', 'medium'),
-                    bloom_level=q_data.get('bloom_level', 'remembering'),
-                    topic=q_data.get('topic', 'General'),
-                    options=json.dumps(q_data.get('options', [])),
-                    correct_answer=q_data['correct_answer'],
-                    points=q_data.get('points', 1)
+                    question_text=validated['question_text'],
+                    question_type=validated['question_type'],
+                    difficulty_level=validated.get('difficulty_level', 'medium'),
+                    bloom_level=validated.get('bloom_level', 'remembering'),
+                    topic=validated.get('topic', 'General'),
+                    options=json.dumps(validated.get('options', [])),
+                    correct_answer=normalized_correct_answer,
+                    points=validated.get('points', 1)
                 )
                 db.session.add(question)
                 added_questions.append(question)
             
             # Update total questions
             exam.total_questions = ExamQuestion.query.filter_by(exam_id=exam_id).count() + len(added_questions)
-            
+
+            db.session.flush()
+            ExamService._refresh_teacher_answer_snapshot(exam)
             db.session.commit()
             
             return {
@@ -1305,6 +1365,13 @@ class ExamService:
                 else:
                     options_json = validated_data['options']
 
+            normalized_correct_answer = (validated_data.get('correct_answer') or '').strip()
+            if not normalized_correct_answer:
+                return {
+                    'success': False,
+                    'message': 'Correct answer is required'
+                }, 400
+
             question = ExamQuestion(
                 exam_id=exam_id,
                 question_text=validated_data['question_text'],
@@ -1313,7 +1380,7 @@ class ExamService:
                 bloom_level=validated_data.get('bloom_level', 'remembering'),
                 topic=validated_data.get('topic', 'General'),
                 options=options_json,
-                correct_answer=validated_data['correct_answer'],
+                correct_answer=normalized_correct_answer,
                 points=validated_data.get('points', 1)
             )
             db.session.add(question)
@@ -1321,6 +1388,8 @@ class ExamService:
             # Update total questions count
             exam.total_questions = ExamQuestion.query.filter_by(exam_id=exam_id).count() + 1
 
+            db.session.flush()
+            ExamService._refresh_teacher_answer_snapshot(exam)
             db.session.commit()
 
             return {
@@ -1425,6 +1494,14 @@ class ExamService:
 
                 validated_data['options'] = normalized_options
                 validated_data['correct_answer'] = normalized_correct
+            elif 'correct_answer' in validated_data:
+                normalized_correct = (validated_data.get('correct_answer') or '').strip()
+                if not normalized_correct:
+                    return {
+                        'success': False,
+                        'message': 'Correct answer is required'
+                    }, 400
+                validated_data['correct_answer'] = normalized_correct
              
             # Update fields and track whether the teacher/admin actually changed content.
             has_content_change = False
@@ -1446,7 +1523,10 @@ class ExamService:
             # When a revision-required exam is edited, mark it as revised.
             if has_content_change and question.exam and question.exam.admin_status == 'revision_required':
                 question.exam.admin_status = 'Re-Used'
-             
+
+            db.session.flush()
+            if question.exam:
+                ExamService._refresh_teacher_answer_snapshot(question.exam)
             db.session.commit()
             
             return {
@@ -1506,7 +1586,10 @@ class ExamService:
             exam = Exam.query.get(exam_id)
             if exam:
                 exam.total_questions = ExamQuestion.query.filter_by(exam_id=exam_id).count()
-            
+
+            db.session.flush()
+            if exam:
+                ExamService._refresh_teacher_answer_snapshot(exam)
             db.session.commit()
             
             return {
@@ -1953,20 +2036,25 @@ class ExamService:
             total_points = 0
             
             for question in questions:
-                # Get the correct answer from exam_answers table
-                correct_answer = question.correct_answer  # Default from question
+                # The live question row is the canonical answer-key source.
+                live_correct_answer = (question.correct_answer or '').strip()
+                correct_answer = live_correct_answer or (question.correct_answer or '')
                 points = question.points or 1
                 
-                # If submission exists, get answer from exam_answers table
+                # Fall back to the teacher snapshot only for legacy rows where the
+                # current question answer is unexpectedly blank.
                 if submission:
                     answer_record = ExamAnswer.query.filter_by(
                         submission_id=submission.submission_id,
                         question_id=question.question_id
                     ).first()
                     
-                    if answer_record and answer_record.answer_text:
-                        correct_answer = answer_record.answer_text
-                        points = answer_record.points_earned or question.points or 1
+                    if answer_record:
+                        snapshot_answer = (answer_record.answer_text or '').strip()
+                        if not live_correct_answer and snapshot_answer:
+                            correct_answer = snapshot_answer
+                        if (question.points is None) and answer_record.points_earned is not None:
+                            points = answer_record.points_earned
                 
                 total_points += points
                 
