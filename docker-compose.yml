@@ -1,0 +1,87 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: awegen-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-db-password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-awegen_db}
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: awegen-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: awegen-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      FLASK_APP: main.py
+      FLASK_ENV: ${FLASK_ENV:-development}
+      FLASK_DEBUG: "${FLASK_DEBUG:-1}"
+      SECRET_KEY: ${SECRET_KEY:-change-me-secret-key}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-change-me-jwt-secret-key}
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD:-change-me-db-password}@mysql:3306/${MYSQL_DATABASE:-awegen_db}
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_FOLDER: uploads
+      NLP_MODEL_PATH: models/nlp
+      AI_HEALTHCHECK_ON_START: "${AI_HEALTHCHECK_ON_START:-false}"
+      AI_HEALTHCHECK_STRICT: "${AI_HEALTHCHECK_STRICT:-false}"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      APP_LOGIN_URL: ${APP_LOGIN_URL:-http://localhost:3000/auth/login}
+      PDF_DOWNLOAD_PASSWORD: ${PDF_DOWNLOAD_PASSWORD:-}
+      SMTP_SERVER: ${SMTP_SERVER:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USERNAME: ${thesisawegen@gmail.com-}
+      SMTP_PASSWORD: ${qvjm scns kdeb imjh:-}
+      FROM_EMAIL: ${thesisawegen@gmail.com:-}
+      FROM_NAME: ${FROM_NAME:-AWEGen System}
+    ports:
+      - "${BACKEND_PORT:-5000}:5000"
+    volumes:
+      - backend_uploads:/app/uploads
+      - backend_temp:/app/temp
+      - backend_nltk:/root/nltk_data
+      - backend_hf_cache:/root/.cache/huggingface
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: awegen-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      PORT: ${FRONTEND_PORT:-3000}
+      VITE_BACKEND_PROXY_TARGET: ${VITE_BACKEND_PROXY_TARGET:-http://backend:5000}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+
+volumes:
+  mysql_data:
+  backend_uploads:
+  backend_temp:
+  backend_nltk:
+  backend_hf_cache:

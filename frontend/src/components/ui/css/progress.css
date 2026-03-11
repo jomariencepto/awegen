@@ -1,0 +1,29 @@
+.progress {
+  position: relative;
+  height: 1rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 9999px;
+  background-color: #f3f4f6;
+}
+
+.progress-indicator {
+  height: 100%;
+  width: 100%;
+  flex: 1;
+  background-color: #3b82f6;
+  transition: transform 0.3s ease-in-out;
+}
+
+/* Different color variants */
+.progress-success .progress-indicator {
+  background-color: #10b981;
+}
+
+.progress-warning .progress-indicator {
+  background-color: #f59e0b;
+}
+
+.progress-danger .progress-indicator {
+  background-color: #ef4444;
+}
