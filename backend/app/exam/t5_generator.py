@@ -80,15 +80,36 @@ class T5QuestionGenerator:
         
         verb = bloom_verbs.get(bloom_level, 'describe')
         
+        quality_rules = (
+            "Use only the module context. Do not change the configured question type, "
+            "Bloom level, difficulty, time allocation, or coverage. "
+            "Do not place the correct answer in the question text. "
+            "Do not copy sentences directly from the module. "
+            "Write clear academic wording only."
+        )
+
         # Construct type-specific instruction
         if question_type == 'multiple_choice':
-            instruction = f"Generate a multiple choice question asking students {verb} {tfidf_keyword}. Provide 4 options labeled A-D."
+            instruction = (
+                f"Generate one multiple choice question whose correct answer is the target concept "
+                f"'{tfidf_keyword}'. Ask students to {verb} the concept without naming it in the stem. "
+                f"Provide exactly 4 options labeled A-D with 1 correct answer and 3 plausible distractors."
+            )
         elif question_type == 'true_false':
-            instruction = f"Generate a true/false statement about {tfidf_keyword}."
+            instruction = (
+                f"Generate one true/false statement about the target concept '{tfidf_keyword}'. "
+                f"Base it strictly on the module context."
+            )
         elif question_type == 'fill_in_blank':
-            instruction = f"Generate a fill-in-the-blank question about {tfidf_keyword}. Use ______ for the blank."
+            instruction = (
+                f"Generate one fill-in-the-blank question whose answer is '{tfidf_keyword}'. "
+                f"Use ______ for the blank and do not reveal the answer in the question text."
+            )
         elif question_type == 'identification':
-            instruction = f"Generate an identification question asking students {verb} {tfidf_keyword}."
+            instruction = (
+                f"Generate one identification question whose correct answer is '{tfidf_keyword}'. "
+                f"Ask students to {verb} the concept without naming it in the prompt."
+            )
         else:
             instruction = f"Generate a question about {tfidf_keyword}."
         
@@ -102,7 +123,7 @@ class T5QuestionGenerator:
         difficulty_hint = difficulty_hints.get(difficulty_level, '')
         
         # Final prompt
-        prompt = f"{instruction} {difficulty_hint} Context: {clean_context}"
+        prompt = f"{instruction} {quality_rules} {difficulty_hint} Context: {clean_context}"
         
         return prompt
     
@@ -528,7 +549,21 @@ class T5QuestionGenerator:
             if not question_text or len(question_text) < 10:
                 logger.warning("Question text too short or empty")
                 return None
-            
+
+            if question_type in ('multiple_choice', 'fill_in_blank', 'identification'):
+                answer_text = str(correct_answer or '').strip()
+                if answer_text and re.search(re.escape(answer_text), question_text, re.IGNORECASE):
+                    logger.warning("Question text exposes the correct answer")
+                    return None
+
+            if question_type == 'multiple_choice':
+                if not isinstance(options, list) or len(options) != 4 or len(set(options)) != 4:
+                    logger.warning("MCQ must contain exactly 4 distinct options")
+                    return None
+                if correct_answer not in options:
+                    logger.warning("MCQ correct answer must be included in options")
+                    return None
+             
             if self._contains_forbidden_words(question_text):
                 logger.warning("Question text still contains forbidden words after filtering")
                 return None

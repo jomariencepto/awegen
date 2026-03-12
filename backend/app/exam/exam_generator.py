@@ -3,6 +3,7 @@ import random
 import json
 import re
 from datetime import datetime
+from difflib import SequenceMatcher
 from app.exam.tfidf_engine import TFIDFEngine
 from app.exam.hybrid_nlp import HybridNLPEngine
 from app.exam.bloom_classifier import BloomClassifier
@@ -1055,6 +1056,196 @@ class ExamGenerator:
             return None
 
         return clean if len(clean) > 15 else None
+
+    @staticmethod
+    def _normalize_clue_text(clue):
+        """Normalize a clue/description fragment for use in stems."""
+        clue = re.sub(r'\s+', ' ', str(clue or '')).strip()
+        clue = clue.strip(' "\'')
+        clue = re.sub(r'^[,;:\-\s]+|[,;:\-\s]+$', '', clue)
+        clue = clue.rstrip('.')
+        return clue.strip()
+
+    def _extract_question_clue(self, text, keyword):
+        """
+        Return a short clue derived from module text without exposing the answer.
+
+        Preference order:
+        1. Definition sentence cleaned into a description
+        2. Any valid context sentence containing the keyword
+        """
+        if not text or not keyword:
+            return None
+
+        clean_text = self._clean_text_for_questions(text)
+        candidates = []
+        definition_sentence = self._extract_definition_sentence(clean_text, keyword)
+        if definition_sentence:
+            candidates.append(definition_sentence)
+
+        for sentence in self._sent_tokenize(clean_text):
+            sentence = sentence.strip()
+            if len(sentence) < 20 or len(sentence) > 220:
+                continue
+            if not ExamGenerator._is_valid_question_sentence(sentence):
+                continue
+            if keyword.lower() not in sentence.lower():
+                continue
+            candidates.append(sentence)
+
+        seen = set()
+        for sentence in candidates:
+            if sentence in seen:
+                continue
+            seen.add(sentence)
+            clue = self._create_clean_description(sentence, keyword)
+            clue = self._normalize_clue_text(clue)
+            if not clue:
+                continue
+            if keyword.lower() in clue.lower():
+                continue
+            if len(clue.split()) < 4:
+                continue
+            if re.search(r'_{3,}', clue):
+                continue
+            return clue
+
+        return None
+
+    def _build_mcq_stem_from_clue(self, clue, bloom_level):
+        """Turn a clue into a Bloom-aware MCQ stem without naming the answer."""
+        clue = self._normalize_clue_text(clue)
+        if not clue:
+            return None
+
+        templates = {
+            'remembering': [
+                "Which term best matches this description: {clue}?",
+                "Which concept is being described here: {clue}?",
+            ],
+            'understanding': [
+                "Which concept is best explained by this description: {clue}?",
+                "Which idea best fits the explanation below: {clue}?",
+            ],
+            'applying': [
+                "Which concept would be most useful in a situation involving {clue}?",
+                "Which idea would best apply to a case involving {clue}?",
+            ],
+            'analyzing': [
+                "Which concept is most central to analyzing a case involving {clue}?",
+                "Which idea would be most relevant when examining a situation involving {clue}?",
+            ],
+            'evaluating': [
+                "Which concept would be most important when judging a case involving {clue}?",
+                "Which idea would be most relevant when evaluating a situation involving {clue}?",
+            ],
+            'creating': [
+                "Which concept should guide the design of a response to a case involving {clue}?",
+                "Which idea would best support creating a solution for a case involving {clue}?",
+            ],
+        }
+        choices = templates.get(bloom_level, templates['remembering'])
+        return random.choice(choices).format(clue=clue)
+
+    def _build_fill_in_blank_stem_from_clue(self, clue, bloom_level):
+        """Turn a clue into a fill-in-the-blank stem without copying the source sentence."""
+        clue = self._normalize_clue_text(clue)
+        if not clue:
+            return None
+
+        templates = {
+            'remembering': [
+                "The term described as {clue} is _______.",
+                "The concept referred to by {clue} is _______.",
+            ],
+            'understanding': [
+                "The concept best explained by {clue} is _______.",
+                "The idea described by {clue} is _______.",
+            ],
+            'applying': [
+                "In a situation involving {clue}, the relevant concept is _______.",
+                "When applying ideas related to {clue}, the key concept is _______.",
+            ],
+            'analyzing': [
+                "When analyzing a case involving {clue}, the key concept is _______.",
+                "For examining a situation involving {clue}, the central concept is _______.",
+            ],
+            'evaluating': [
+                "When judging a case involving {clue}, the concept to consider is _______.",
+                "For evaluating a situation involving {clue}, the relevant concept is _______.",
+            ],
+            'creating': [
+                "When designing a response to {clue}, the guiding concept is _______.",
+                "For creating a solution related to {clue}, the key concept is _______.",
+            ],
+        }
+        choices = templates.get(bloom_level, templates['remembering'])
+        return random.choice(choices).format(clue=clue)
+
+    def _build_true_false_statement_from_clue(self, keyword, clue):
+        """Create a declarative statement from a keyword/clue pair."""
+        clue = self._normalize_clue_text(clue)
+        keyword = str(keyword or '').strip()
+        if not keyword or not clue:
+            return None
+
+        templates = [
+            "{keyword} refers to {clue}.",
+            "{keyword} is best described as {clue}.",
+            "The term {keyword} is used for {clue}.",
+        ]
+        return random.choice(templates).format(keyword=keyword, clue=clue)
+
+    @staticmethod
+    def _normalize_for_copy_check(text):
+        """Normalize text so copied-source detection ignores wrappers and punctuation."""
+        text = str(text or '')
+        text = re.sub(r'_{3,}', ' ', text)
+        text = text.strip().lower()
+        prefix_patterns = [
+            r'^(?:true\s+or\s+false\s*:?\s*)',
+            r'^(?:state\s+whether\s+the\s+(?:following\s+)?statement\s+is\s+(?:true\s+or\s+false|accurate)\s*:?\s*)',
+            r'^(?:determine\s+(?:if|whether)\s+the\s+statement\s+is\s+(?:correct|accurate)\s*:?\s*)',
+            r'^(?:evaluate\s+the\s+accuracy\s+of\s+this\s+statement\s*:?\s*)',
+            r'^(?:judge\s+the\s+accuracy\s+of\s+this\s+statement\s*:?\s*)',
+            r'^(?:fill\s+in\s+the\s+blank\s*:?\s*)',
+            r'^(?:complete\s+the\s+statement\s*:?\s*)',
+            r'^(?:supply\s+the\s+missing\s+(?:word|term)\s*:?\s*)',
+            r'^(?:provide\s+the\s+correct\s+term\s*:?\s*)',
+            r'^(?:write\s+the\s+missing\s+word\s*:?\s*)',
+            r'^(?:what\s+word\s+completes\s+the\s+sentence\??\s*)',
+            r'^(?:give\s+the\s+missing\s+term\s*:?\s*)',
+        ]
+        for pattern in prefix_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        text = re.sub(r'[^a-z0-9\s]', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    def _question_looks_copied_from_source(self, question_text, source_text):
+        """Reject objective stems that are effectively copied from a module sentence."""
+        q_norm = self._normalize_for_copy_check(question_text)
+        if len(q_norm.split()) < 6:
+            return False
+
+        source_clean = self._clean_text_for_questions(source_text)
+        for sentence in self._sent_tokenize(source_clean):
+            s_norm = self._normalize_for_copy_check(sentence)
+            if len(s_norm.split()) < 6:
+                continue
+            if q_norm == s_norm:
+                return True
+
+            ratio = SequenceMatcher(None, q_norm, s_norm).ratio()
+            if ratio >= 0.93:
+                return True
+
+            q_words = set(q_norm.split())
+            s_words = set(s_norm.split())
+            overlap = len(q_words & s_words) / max(min(len(q_words), len(s_words)), 1)
+            if overlap >= 0.90 and abs(len(q_words) - len(s_words)) <= 2:
+                return True
+
+        return False
     
     def _distribute_questions_by_type_and_difficulty(self, module_content, exam_config):
         """Generate questions using improved local methods"""
@@ -2011,34 +2202,32 @@ class ExamGenerator:
                 if len(questions) >= count:
                     break
 
-                # Find the sentence that contains this keyword
-                candidate_sentences = [s for s in raw_sentences
-                                       if re.search(r'\b' + re.escape(keyword) + r'\b', s, re.IGNORECASE)]
-                if not candidate_sentences:
-                    continue
+                clue = self._extract_question_clue(clean_text_mcq, keyword)
+                question_text = self._build_mcq_stem_from_clue(clue, bloom_level) if clue else None
 
-                sentence = random.choice(candidate_sentences)
+                if not question_text:
+                    # Fallback only when no clue can be derived from the source text.
+                    candidate_sentences = [
+                        s for s in raw_sentences
+                        if re.search(r'\b' + re.escape(keyword) + r'\b', s, re.IGNORECASE)
+                    ]
+                    if not candidate_sentences:
+                        continue
 
-                # Blank out the keyword → becomes the question
-                question_text = re.sub(
-                    r'\b' + re.escape(keyword) + r'\b',
-                    '_______',
-                    sentence,
-                    count=1,
-                    flags=re.IGNORECASE
-                ).strip()
+                    sentence = random.choice(candidate_sentences)
+                    blanked = re.sub(
+                        r'\b' + re.escape(keyword) + r'\b',
+                        '_______',
+                        sentence,
+                        count=1,
+                        flags=re.IGNORECASE
+                    ).strip()
 
-                # If the keyword still appears (multiple occurrences), skip to avoid answer leakage
-                if re.search(r'\b' + re.escape(keyword) + r'\b', question_text, re.IGNORECASE):
-                    continue
-
-                if '_______' not in question_text:
-                    continue
-
-                # Keep the original blanked sentence as the stem to avoid
-                # repetitive wrapper prompts (e.g., "Which of the following...").
-                _blanked = question_text.rstrip('.')
-                question_text = _blanked if _blanked else question_text
+                    if re.search(r'\b' + re.escape(keyword) + r'\b', blanked, re.IGNORECASE):
+                        continue
+                    if '_______' not in blanked:
+                        continue
+                    question_text = f"Which term best completes this statement: {blanked.rstrip('.')}?"
 
                 # Distractors: other keywords ranked by semantic similarity to correct answer.
                 # Filter out generic/short terms that make poor MCQ distractors.
@@ -2103,13 +2292,13 @@ class ExamGenerator:
                         distractors += self.nlp_engine._generate_semantic_variations(keyword, 'concept')[:3]
                     distractors = distractors[:3]
 
-                if len(distractors) < 2:
+                if len(distractors) < 3:
                     continue
 
                 options = [keyword] + distractors[:3]
                 # Ensure 4 distinct options
                 options = list(dict.fromkeys(options))  # deduplicate preserving order
-                if len(options) < 3:
+                if len(options) != 4:
                     continue
                 random.shuffle(options)
 
@@ -2186,10 +2375,10 @@ class ExamGenerator:
                     distractors = [a for a in all_answers if a.lower() != ans_lower]
                     random.shuffle(distractors)
                     distractors = distractors[:3]
-                    if len(distractors) < 2:
+                    if len(distractors) < 3:
                         continue
                     options = list(dict.fromkeys([ans] + distractors))
-                    if len(options) < 3:
+                    if len(options) != 4:
                         continue
                     random.shuffle(options)
                     mcq = {
@@ -2365,6 +2554,73 @@ class ExamGenerator:
             true_used    = 0
             false_used   = 0
 
+            # Prefer clue-based statements so the output is anchored in the module
+            # without copying full source sentences verbatim.
+            self.tfidf_engine.add_document(clean_text)
+            tfidf_keywords = self.tfidf_engine.extract_keywords(clean_text, top_n=max(count * 6, 12))
+            clue_pairs = []
+            seen_keywords = set()
+            for keyword, _ in self._enhance_keyword_selection_with_nlp(clean_text, tfidf_keywords):
+                kw_key = keyword.lower().strip()
+                if not kw_key or kw_key in seen_keywords:
+                    continue
+                clue = self._extract_question_clue(clean_text, keyword)
+                if not clue:
+                    continue
+                clue_pairs.append((keyword, clue))
+                seen_keywords.add(kw_key)
+                if len(clue_pairs) >= count * 4:
+                    break
+
+            random.shuffle(clue_pairs)
+            for keyword, clue in clue_pairs:
+                if len(questions) >= count:
+                    break
+
+                if true_used < true_budget:
+                    statement = self._build_true_false_statement_from_clue(keyword, clue)
+                    if statement:
+                        q_true = {
+                            'question_text': statement,
+                            'question_type': 'true_false',
+                            'difficulty_level': difficulty,
+                            'correct_answer': 'True',
+                            'points': points,
+                            'bloom_level': bloom_level
+                        }
+                        if self._add_question_if_valid(q_true):
+                            questions.append(q_true)
+                            true_used += 1
+
+                if false_used < false_budget and len(questions) < count:
+                    other_pairs = [
+                        pair for pair in clue_pairs
+                        if pair[0].lower() != keyword.lower()
+                    ]
+                    if other_pairs:
+                        wrong_keyword, _ = random.choice(other_pairs)
+                        statement = self._build_true_false_statement_from_clue(wrong_keyword, clue)
+                        if statement:
+                            q_false = {
+                                'question_text': statement,
+                                'question_type': 'true_false',
+                                'difficulty_level': difficulty,
+                                'correct_answer': 'False',
+                                'points': points,
+                                'bloom_level': bloom_level
+                            }
+                            if self._add_question_if_valid(q_false):
+                                questions.append(q_false)
+                                false_used += 1
+
+            _tf_prefixes = [
+                "", "", "", "",  # 4x no prefix (most T/F are plain statements)
+                "State whether the statement is correct: ",
+                "Determine whether the statement is accurate: ",
+                "Evaluate the accuracy of this statement: ",
+                "Judge the accuracy of this statement: ",
+            ]
+
             # Try BOTH a True and a False question from every sentence so a small
             # sentence pool (N sentences) can still produce 2N candidate questions.
             for sentence in sentences:
@@ -2374,15 +2630,6 @@ class ExamGenerator:
                 # --- True version (respect budget) ---
                 if true_used < true_budget:
                     _tf_stmt = ExamGenerator._desquish_long_tokens(sentence)
-                    _tf_prefixes = [
-                        "", "", "", "",  # 4x no prefix (most T/F are plain statements)
-                        "True or False: ",
-                        "State whether the following is true or false: ",
-                        "Determine if the statement is correct: ",
-                        "Is the following statement accurate? ",
-                        "Evaluate the accuracy of this statement: ",
-                        "Judge whether this is true or false: ",
-                    ]
                     _tf_prefix = random.choice(_tf_prefixes)
                     q_true = {
                         'question_text': f"{_tf_prefix}{_tf_stmt}" if _tf_prefix else _tf_stmt,
@@ -2434,8 +2681,11 @@ class ExamGenerator:
                     if not def_sent or def_sent in seen_def_sents:
                         continue
                     seen_def_sents.add(def_sent)
-                    def_clean = def_sent.rstrip('.') + '.'
+                    clue = self._extract_question_clue(clean_text, kw)
+                    def_clean = self._build_true_false_statement_from_clue(kw, clue)
                     if not ExamGenerator._is_valid_question_sentence(def_sent.rstrip('.')):
+                        continue
+                    if not def_clean:
                         continue
 
                     if true_used < true_budget:
@@ -2794,9 +3044,7 @@ class ExamGenerator:
             ]
 
             if not sentences:
-                # No usable text sentences — return whatever DB questions were collected
-                logger.info(f"        ℹ️  No valid sentences for FIB text gen; returning {len(questions)} DB questions")
-                return questions
+                logger.info("        ℹ️  No valid sentences for FIB text gen; trying clue-based generation only")
 
             # Get important keywords
             self.tfidf_engine.add_document(clean_text)
@@ -2829,6 +3077,39 @@ class ExamGenerator:
                 'reject', 'accept', 'write', 'solve', 'compute', 'determine',
                 'consider', 'identify', 'note', 'check', 'compare', 'state',
             }
+
+            # Prefer clue-based blanks first so the prompt tests understanding
+            # instead of reproducing a module sentence almost verbatim.
+            used_answers = {q.get('correct_answer', '').lower() for q in questions}
+            for keyword, _ in keywords:
+                if len(questions) >= count:
+                    break
+
+                kw_key = keyword.lower().strip()
+                if not kw_key or kw_key in used_answers:
+                    continue
+                if kw_key in _FIB_SKIP_WORDS:
+                    continue
+                if len(kw_key.replace(' ', '')) < 4:
+                    continue
+
+                clue = self._extract_question_clue(clean_text, keyword)
+                stem = self._build_fill_in_blank_stem_from_clue(clue, bloom_level)
+                if not stem:
+                    continue
+
+                question = {
+                    'question_text': stem,
+                    'question_type': 'fill_in_blank',
+                    'difficulty_level': difficulty,
+                    'correct_answer': keyword,
+                    'points': points,
+                    'bloom_level': bloom_level
+                }
+
+                if self._add_question_if_valid(question):
+                    questions.append(question)
+                    used_answers.add(kw_key)
 
             for sentence in sentences:
                 if len(questions) >= count:
@@ -5467,6 +5748,11 @@ class ExamGenerator:
                     verification_passed = False
                     logger.warning(f"  REJECT Q{idx+1}: Spaced-letter artifact detected")
 
+                if q_type in ['multiple_choice', 'true_false', 'fill_in_blank', 'identification']:
+                    if self._question_looks_copied_from_source(q_text, text_content):
+                        verification_passed = False
+                        logger.warning(f"  REJECT Q{idx+1}: Question text copies the source too closely")
+
                 # Avoid generic template stems that produced poor questions.
                 # Keep as warning-only in balanced mode to reduce over-rejection.
                 if "complete the sentence" in q_text.lower() or "what term completes" in q_text.lower():
@@ -5489,10 +5775,10 @@ class ExamGenerator:
                 if q_type == 'multiple_choice':
                     options = question.get('options', [])
 
-                    # Must have at least 2 options
-                    if len(options) < 2:
+                    # Must have exactly 4 options: 1 correct answer + 3 distractors
+                    if len(options) != 4:
                         verification_passed = False
-                        logger.warning(f"  ❌ Q{idx+1}: MCQ must have at least 2 options")
+                        logger.warning(f"  ❌ Q{idx+1}: MCQ must have exactly 4 options")
 
                     # Correct answer must be in options
                     elif correct_answer not in options:
