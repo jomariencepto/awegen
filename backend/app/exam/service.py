@@ -19,7 +19,7 @@ import threading
 
 # Process-level ExamGenerator cache — models (spaCy, sentence-transformers, T5)
 # are loaded once and reused across requests.  Per-exam mutable state is reset
-# by generate_exam() → reset_question_tracking() at the start of every call.
+# By generate_exam() → reset_question_tracking() at the start of every call.
 _exam_generator_lock = threading.Lock()
 _exam_generator_instance = None
 
@@ -71,11 +71,14 @@ class ExamService:
         """Collapse OCR-style spaced letters so they can be repaired normally."""
         if text is None:
             return None
-        return re.sub(
-            r'(?<!\w)(?:[A-Za-z]\s+){4,}[A-Za-z](?!\w)',
-            lambda match: re.sub(r'\s+', '', match.group(0)),
-            str(text),
-        )
+        # Match sequences of single letters separated by spaces (4+ letters)
+        # This is much more flexible than requiring word boundaries
+        def join_if_spaced(match):
+            # Remove all whitespace between letters in the matched sequence
+            return re.sub(r'\s+', '', match.group(0))
+        
+        # Match any sequence of 4+ letters with spaces between them
+        return re.sub(r'([A-Za-z]\s+){4,}[A-Za-z]', join_if_spaced, str(text))
 
     @staticmethod
     def _desquish_display_tokens(text):
@@ -2249,10 +2252,10 @@ class ExamService:
                 
                 question_data = {
                     'question_id': question.question_id,
-                    'question_text': question.question_text,
+                    'question_text': ExamService._normalize_question_text_for_client(question.question_text),
                     'question_type': question.question_type,
                     'difficulty_level': question.difficulty_level,
-                    'correct_answer': correct_answer,
+                    'correct_answer': ExamService._normalize_question_text_for_client(correct_answer),
                     'points': points
                 }
                 

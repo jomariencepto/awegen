@@ -544,6 +544,14 @@ def preview_exam():
                 'target_points': exam_result.get('target_points'),
             }), status_code
         
+        # Normalize question text for displays
+        from app.exam.service import ExamService
+        for question in exam_result.get('questions', []):
+            if 'question_text' in question:
+                question['question_text'] = ExamService._normalize_question_text_for_client(
+                    question['question_text']
+                )
+        
         return jsonify({
             'success': True,
             'message': 'Exam preview generated successfully',
@@ -593,11 +601,12 @@ def preview_saved_exam(exam_id):
         questions = ExamQuestion.query.filter_by(exam_id=exam_id).order_by(ExamQuestion.question_id).all()
         
         # Format questions for frontend
+        from app.exam.service import ExamService
         formatted_questions = []
         for q in questions:
             question_dict = {
                 "question_id": q.question_id,
-                "question_text": q.question_text,
+                "question_text": ExamService._normalize_question_text_for_client(q.question_text),
                 "question_type": q.question_type,
                 "difficulty_level": q.difficulty_level,
                 "correct_answer": q.correct_answer,
@@ -1225,9 +1234,15 @@ def get_question_analysis(exam_id):
             # Calculate success rate
             success_rate = (correct_answers / total_answers * 100) if total_answers > 0 else 0
             
+            # Normalize question text for display
+            question_text = question.question_text
+            if len(question_text) > 100:
+                question_text = question_text[:100] + "..."
+            question_text = ExamService._normalize_question_text_for_client(question_text)
+            
             question_analysis.append({
                 "question_id": question.question_id,
-                "question_text": question.question_text[:100] + "..." if len(question.question_text) > 100 else question.question_text,
+                "question_text": question_text,
                 "question_type": question.question_type,
                 "difficulty": question.difficulty_level,
                 "total_answers": total_answers,
