@@ -6132,8 +6132,10 @@ class ExamGenerator:
                             verification_stats['warnings'] += 1
                             logger.info(f"  🔄 Q{idx+1}: Rewrote copied stem during verification")
                         else:
-                            verification_passed = False
-                            logger.warning(f"  REJECT Q{idx+1}: Question text copies the source too closely")
+                            # Accept the question but flag as suspicious to avoid severe score shortfall
+                            warnings.append("Question text closely matches source content")
+                            verification_stats['warnings'] += 1
+                            logger.warning(f"  ⚠️ Q{idx+1}: Question text closely matches source content (accepted)")
 
                 # Avoid generic template stems that produced poor questions.
                 # Keep as warning-only in balanced mode to reduce over-rejection.
