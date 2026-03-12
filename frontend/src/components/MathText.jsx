@@ -2,52 +2,54 @@ import React from 'react';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 
-// Detects Unicode math characters and caret-exponent notation
-const MATH_CHARS = /[∑∫√πμσα β±≤≥∂²³₀₁₂₃ᵢ]|[A-Za-z]\^/;
+const DELIMITED_MATH_RE = /(\$\$[\s\S]+?\$\$|\$[^$\n]+\$)/g;
+const STANDALONE_MATH_RE =
+  /^[0-9A-Za-z\s()+\-*/=^_.,:%[\]{}|<>/\\\u00b1\u03a9\u03b1\u03b2\u03b3\u03b4\u03b8\u03bb\u03bc\u03c0\u03c3\u2211\u221a\u221e\u222b\u2264\u2265]+$/u;
+const MATH_SYMBOL_RE =
+  /[=+\-*/^_<>]|\b(?:sin|cos|tan|log|ln)\b|[\u00b1\u03a9\u03b1\u03b2\u03b3\u03b4\u03b8\u03bb\u03bc\u03c0\u03c3\u2211\u221a\u221e\u222b\u2264\u2265]/iu;
+const NATURAL_LANGUAGE_WORD_RE = /\b[A-Za-z]{4,}\b/;
 
-/**
- * Renders a string that may contain math formulas.
- *
- * Supported formats:
- *   $$...$$ → block (display) math via KaTeX
- *   $...$   → inline math via KaTeX
- *   plain Unicode math (μ, σ, √, etc.) → attempted inline KaTeX render
- *   plain text → rendered as-is in a <span>
- */
+function looksLikeStandaloneMath(text) {
+  const normalized = (text || '').trim();
+  if (!normalized || normalized.includes('$')) {
+    return false;
+  }
+
+  if (normalized.length > 120) {
+    return false;
+  }
+
+  if (!STANDALONE_MATH_RE.test(normalized)) {
+    return false;
+  }
+
+  if (NATURAL_LANGUAGE_WORD_RE.test(normalized)) {
+    return false;
+  }
+
+  return MATH_SYMBOL_RE.test(normalized);
+}
+
 function MathText({ text, className = '' }) {
   if (!text) return null;
 
-  // If no $ delimiters but the string contains math symbols,
-  // try rendering the whole string as inline KaTeX.
-  if (!text.includes('$') && MATH_CHARS.test(text)) {
-    try {
-      return <InlineMath math={text} />;
-    } catch {
-      // KaTeX couldn't parse it — fall back to plain text
-      return <span className={className}>{text}</span>;
-    }
+  if (looksLikeStandaloneMath(text)) {
+    return <InlineMath math={text} />;
   }
 
-  // Split on $$...$$ and $...$ delimiters, preserving the delimiters
-  const parts = text.split(/(\$\$[^$]+\$\$|\$[^$]+\$)/g);
+  const parts = text.split(DELIMITED_MATH_RE);
 
   return (
     <span className={className}>
       {parts.map((part, i) => {
         if (part.startsWith('$$') && part.endsWith('$$')) {
-          try {
-            return <BlockMath key={i} math={part.slice(2, -2)} />;
-          } catch {
-            return <span key={i}>{part}</span>;
-          }
+          return <BlockMath key={i} math={part.slice(2, -2)} />;
         }
+
         if (part.startsWith('$') && part.endsWith('$')) {
-          try {
-            return <InlineMath key={i} math={part.slice(1, -1)} />;
-          } catch {
-            return <span key={i}>{part}</span>;
-          }
+          return <InlineMath key={i} math={part.slice(1, -1)} />;
         }
+
         return <span key={i}>{part}</span>;
       })}
     </span>

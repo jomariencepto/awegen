@@ -1,4 +1,5 @@
 import json
+import re
 from app.database import db
 from app.exam.models import Exam, ExamQuestion, ExamCategory, ExamSubmission, ExamAnswer, ExamModule
 from app.exam.schemas import (
@@ -36,6 +37,55 @@ logger = get_logger(__name__)
 
 
 class ExamService:
+    @staticmethod
+    def _strip_legacy_section_instruction(text):
+        """Remove old first-question instruction prefixes from display text."""
+        if text is None:
+            return None
+
+        normalized = str(text).replace('\r\n', '\n').replace('\r', '\n').strip()
+        parts = re.split(r'\n\s*\n', normalized, maxsplit=1)
+        if len(parts) != 2:
+            return normalized
+
+        instruction_text, body_text = (part.strip() for part in parts)
+        if not instruction_text or not body_text or len(instruction_text) > 240:
+            return normalized
+
+        instruction_lower = instruction_text.lower()
+        looks_like_instruction = (
+            instruction_lower.startswith((
+                'choose ', 'write ', 'fill ', 'identify ', 'select ',
+                'match ', 'solve ', 'answer ',
+            ))
+            or ('true' in instruction_lower and 'false' in instruction_lower)
+            or 'blank' in instruction_lower
+            or 'correct answer' in instruction_lower
+            or 'term or concept' in instruction_lower
+            or re.search(r'\b(?:instruction|direction)s?\b', instruction_lower)
+        )
+        return body_text if looks_like_instruction else normalized
+
+    @staticmethod
+    def _normalize_question_text_for_client(text, strip_section_instruction=False):
+        """Clean legacy display artifacts without changing stored database text."""
+        if text is None:
+            return None
+
+        cleaned = str(text).replace('\r\n', '\n').replace('\r', '\n')
+        if strip_section_instruction:
+            cleaned = ExamService._strip_legacy_section_instruction(cleaned)
+
+        cleaned = re.sub(
+            r'[\u2022\u25cf\u25e6\u25aa\u25a0\u25a1\u25ab\u25ad\u25fb\u25fc\u25fd\u25fe\uf0b7\uf075]',
+            ' ',
+            cleaned,
+        )
+        cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+        cleaned = re.sub(r' *\n *', '\n', cleaned)
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+
     @staticmethod
     def _build_question_count_map(exam_ids):
         """Return {exam_id: question_count} for the provided exam IDs."""
@@ -564,6 +614,7 @@ class ExamService:
                     exam_id=exam.exam_id,
                     module_question_id=question_data.get('_module_question_id'),
                     question_text=question_data['question_text'],
+                    section_instruction=question_data.get('section_instruction'),
                     question_type=question_data['question_type'],
                     difficulty_level=question_data.get('difficulty_level', 'medium'),
                     bloom_level=question_data.get('bloom_level', 'remembering'),
@@ -601,6 +652,7 @@ class ExamService:
                 image_id = q.get('_image_id')
                 formatted_questions.append({
                     "question_text": q.get('question_text'),
+                    "section_instruction": q.get('section_instruction'),
                     "question_type": q.get('question_type'),
                     "options": q.get('options', []),
                     "correct_answer": q.get('correct_answer'),
@@ -677,15 +729,25 @@ class ExamService:
             formatted_questions = []
             for q in questions:
                 q_dict = q.to_dict()
+                q_dict['question_text'] = ExamService._normalize_question_text_for_client(
+                    q_dict.get('question_text'),
+                    strip_section_instruction=True,
+                )
+                q_dict['correct_answer'] = ExamService._normalize_question_text_for_client(
+                    q_dict.get('correct_answer')
+                )
                 # Parse options if they're stored as JSON string
                 if q_dict.get('options') and isinstance(q_dict['options'], str):
                     try:
                         q_dict['options'] = json.loads(q_dict['options'])
                     except:
                         q_dict['options'] = []
-                # Clean squished text in MCQ options
                 if q_dict.get('options') and isinstance(q_dict['options'], list):
-                    q_dict['options'] = [ExamGenerator._fix_spaced_characters(o) if isinstance(o, str) else o for o in q_dict['options']]
+                    q_dict['options'] = [
+                        ExamService._normalize_question_text_for_client(o)
+                        if isinstance(o, str) else o
+                        for o in q_dict['options']
+                    ]
                 q_dict['image_module_id'] = image_module_by_id.get(q_dict.get('image_id'))
                 formatted_questions.append(q_dict)
             
@@ -1270,19 +1332,25 @@ class ExamService:
             formatted_questions = []
             for q in questions:
                 q_dict = q.to_dict()
-                # Clean squished text artifacts from stored questions
-                qt = q_dict.get('question_text', '')
-                if qt:
-                    q_dict['question_text'] = ExamGenerator._fix_spaced_characters(qt)
-                ans = q_dict.get('correct_answer', '')
-                if ans and ans not in ('True', 'False'):
-                    q_dict['correct_answer'] = ExamGenerator._fix_spaced_characters(ans)
+                q_dict['question_text'] = ExamService._normalize_question_text_for_client(
+                    q_dict.get('question_text'),
+                    strip_section_instruction=True,
+                )
+                q_dict['correct_answer'] = ExamService._normalize_question_text_for_client(
+                    q_dict.get('correct_answer')
+                )
                 # Parse options if stored as JSON string
                 if q_dict.get('options') and isinstance(q_dict['options'], str):
                     try:
                         q_dict['options'] = json.loads(q_dict['options'])
                     except:
                         q_dict['options'] = []
+                if q_dict.get('options') and isinstance(q_dict['options'], list):
+                    q_dict['options'] = [
+                        ExamService._normalize_question_text_for_client(option)
+                        if isinstance(option, str) else option
+                        for option in q_dict['options']
+                    ]
                 formatted_questions.append(q_dict)
             
             return {
@@ -1667,6 +1735,7 @@ class ExamService:
                 new_question = ExamQuestion(
                     exam_id=new_exam.exam_id,
                     question_text=q.question_text,
+                    section_instruction=q.section_instruction,
                     question_type=q.question_type,
                     difficulty_level=q.difficulty_level,
                     bloom_level=q.bloom_level,

@@ -132,6 +132,7 @@ class ExamQuestion(db.Model):
         nullable=True,
     )
     question_text = db.Column(db.Text, nullable=False)
+    section_instruction = db.Column(db.Text, nullable=True)
     question_type = db.Column(db.Enum('factual', 'conceptual', 'procedural', 'problem_solving', 'analysis', 'multiple_choice', 'true_false', 'modified_true_false', 'fill_in_blank', 'identification', 'short_answer', 'essay'), nullable=False)
     difficulty_level = db.Column(db.Enum('easy', 'medium', 'hard'), nullable=False)
     bloom_level = db.Column(db.String(50), nullable=True, default='remembering')
@@ -157,6 +158,7 @@ class ExamQuestion(db.Model):
             'exam_id': self.exam_id,
             'module_question_id': self.module_question_id,
             'question_text': self.question_text,
+            'section_instruction': self.section_instruction,
             'question_type': self.question_type,
             'difficulty_level': self.difficulty_level,
             'bloom_level': self.bloom_level or 'remembering',

@@ -104,6 +104,11 @@ class PDFExporter:
         if not questions:
             return default_instruction
 
+        for question in questions:
+            explicit_instruction = str(question.get('section_instruction', '') or '').strip()
+            if explicit_instruction:
+                return explicit_instruction
+
         first_question = questions[0]
         first_text = str(first_question.get('question_text', '')).strip()
         if "\n\n" not in first_text:

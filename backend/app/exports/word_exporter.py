@@ -304,6 +304,11 @@ class WordExporter:
         if not questions:
             return default_instruction
 
+        for question in questions:
+            explicit_instruction = self._sanitize_text(question.get('section_instruction', ''))
+            if explicit_instruction:
+                return explicit_instruction
+
         first_question = questions[0]
         first_text = self._sanitize_text(first_question.get('question_text', ''))
         if "\n\n" not in first_text:

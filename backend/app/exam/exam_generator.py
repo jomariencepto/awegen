@@ -286,6 +286,157 @@ class ExamGenerator:
         text = ' '.join(text.split())
         return text
 
+    @staticmethod
+    def _has_spacing_artifact(text):
+        """Detect char-per-line or space-per-character OCR artifacts."""
+        if not text:
+            return False
+        text = str(text)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if len(lines) >= 8:
+            single_alpha_lines = sum(1 for ln in lines if len(ln) == 1 and ln.isalpha())
+            if single_alpha_lines / len(lines) > 0.35:
+                return True
+
+        words = text.split()
+        if len(words) >= 10:
+            single_alpha_words = sum(1 for w in words if len(w) == 1 and w.isalpha())
+            if single_alpha_words / len(words) > 0.35:
+                return True
+        return False
+
+    @staticmethod
+    def _has_text_artifact(text):
+        """Detect OCR, metadata, and slide artifacts that should not reach questions."""
+        if not text:
+            return False
+        text = str(text)
+        normalized = re.sub(r'\s+', ' ', text).strip().lower()
+
+        if ExamGenerator._has_spacing_artifact(text):
+            return True
+        if re.search(r'[\u2022\u25cf\u25e6\u25aa\u25a0\u25a1\u25c6\u25c7\u25ba\u25b6\u25c4\u25c0\uf0b7\uf075]', text):
+            return True
+        if re.search(r'\b(?:add\s+your\s+website|website|learning\s+competenc(?:y|ies)|'
+                     r'at\s+the\s+end\s+of\s+the\s+session|expected\s+to|general\s*education|'
+                     r'department|module|lesson|share\s+policies|pambayangdalubhasaan|'
+                     r'socialsciences|nstp)\b', normalized, re.IGNORECASE):
+            return True
+        if re.search(r'\b[A-Z]{2,8}/\d{2}/\d{2}/\d{4}\b', text):
+            return True
+        if re.search(r'\bPage\s+\d+\s+of\s+\d+\b', text, re.IGNORECASE):
+            return True
+        if any(len(w.rstrip(".,;:!?'\"")) > 25 and w.rstrip(".,;:!?'\"").isalpha() for w in text.split()):
+            return True
+        return False
+
+    def _sanitize_generated_text(self, text):
+        """Repair OCR artifacts in generated stems, answers, and options."""
+        if not text:
+            return ""
+
+        raw_original = str(text).replace('\r', '\n')
+        raw_original = re.sub(r'[\u2022\u25cf\u25e6\u25aa\u25a0\u25a1\u25c6\u25c7\u25ba\u25b6\u25c4\u25c0\uf0b7\uf075]', ' ', raw_original)
+        raw_fixed = self._fix_spaced_characters(raw_original)
+
+        candidates = []
+        for source in (raw_original, raw_fixed):
+            whole = re.sub(r'\s+', ' ', self._desquish_long_tokens(source)).strip()
+            if whole:
+                candidates.append(whole)
+            for line in source.splitlines():
+                cleaned = self._fix_spaced_characters(line)
+                cleaned = self._desquish_long_tokens(cleaned)
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                if cleaned:
+                    candidates.append(cleaned)
+
+        if not candidates:
+            candidates = [self._desquish_long_tokens(raw_original)]
+
+        if len(candidates) > 1:
+            non_single = [c for c in candidates if not (len(c) == 1 and c.isalpha())]
+            if non_single:
+                candidates = non_single
+
+        deduped = []
+        seen = set()
+        for candidate in candidates:
+            norm = self._normalize_text(candidate)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(candidate)
+
+        if not deduped:
+            deduped = [re.sub(r'\s+', ' ', self._desquish_long_tokens(raw_original)).strip()]
+
+        def _quality_score(value):
+            score = len(value.split())
+            if value.endswith('?') or value.endswith('.'):
+                score += 2
+            if ExamGenerator._has_text_artifact(value):
+                score -= 12
+            if re.search(r'\b(?:which|what|how|why|when|where)\b', value, re.IGNORECASE):
+                score += 3
+            score -= max(len(value) - 180, 0) / 20.0
+            return score
+
+        best = max(deduped, key=_quality_score)
+        best = re.sub(r'\s+', ' ', best).strip()
+        return best
+
+    def _is_low_quality_objective_answer(self, answer, question_type=None):
+        """Reject generic or artifact-laden answers for objective questions."""
+        cleaned = self._sanitize_generated_text(answer).strip()
+        if not cleaned:
+            return True
+        if self._has_text_artifact(cleaned):
+            return True
+        if re.search(r'https?://|www\.', cleaned, re.IGNORECASE):
+            return True
+        if len(cleaned.split()) > 8:
+            return True
+        if len(cleaned.split()) == 1 and len(cleaned) < 3:
+            return True
+
+        normalized = cleaned.lower()
+        generic_terms = {
+            'student', 'students', 'course', 'study', 'session', 'module',
+            'lesson', 'website', 'department', 'school', 'teacher', 'teachers',
+            'example', 'examples', 'following', 'statement', 'statements',
+            'activity', 'activities', 'chapter', 'unit', 'topic', 'topics',
+        }
+        if normalized in generic_terms:
+            return True
+
+        strict_types = {'multiple_choice', 'identification', 'true_false'}
+        if question_type in strict_types:
+            too_generic = {
+                'rules', 'rule', 'behavior', 'conduct', 'area', 'areas', 'theories',
+                'theory', 'principles', 'principle', 'people', 'person', 'thing',
+                'things', 'part', 'parts', 'value', 'values', 'study', 'course',
+            }
+            if normalized in too_generic:
+                return True
+
+        return False
+
+    def _is_low_quality_clue(self, clue):
+        """Reject clues that are likely headers, learning outcomes, or OCR debris."""
+        clue = self._sanitize_generated_text(clue)
+        if not clue:
+            return True
+        if self._has_text_artifact(clue):
+            return True
+        if len(clue.split()) < 4 or len(clue.split()) > 24:
+            return True
+        if re.search(r'\b(?:this\s+course|at\s+the\s+end\s+of\s+the\s+session|'
+                     r'expected\s+to|learning\s+competenc(?:y|ies)|share\s+policies|'
+                     r'add\s+your\s+website)\b', clue, re.IGNORECASE):
+            return True
+        return False
+
     # ===== AI ENHANCEMENT: Advanced NLP Methods =====
 
     def _extract_linguistic_features(self, text):
@@ -407,10 +558,24 @@ class ExamGenerator:
                 if kw.lower() not in linguistic_keywords:
                     enhanced_keywords.append((kw, score * 0.8))  # Slightly lower score
 
-            logger.info(f"🎯 Enhanced keywords: {len(enhanced_keywords)} total "
+            filtered_keywords = []
+            seen = set()
+            for kw, score in enhanced_keywords:
+                cleaned_kw = self._sanitize_generated_text(kw).strip()
+                norm = cleaned_kw.lower()
+                if not cleaned_kw or norm in seen:
+                    continue
+                if self._has_text_artifact(cleaned_kw):
+                    continue
+                if self._is_low_quality_objective_answer(cleaned_kw, question_type='multiple_choice'):
+                    continue
+                seen.add(norm)
+                filtered_keywords.append((cleaned_kw, score))
+
+            logger.info(f"🎯 Enhanced keywords: {len(filtered_keywords)} total "
                        f"({len(linguistic_keywords)} from NLP, {len(tfidf_keywords)} from TF-IDF)")
 
-            result = sorted(enhanced_keywords, key=lambda x: x[1], reverse=True)
+            result = sorted(filtered_keywords, key=lambda x: x[1], reverse=True)
             self._keyword_cache[cache_key] = result
             return result
 
@@ -466,15 +631,33 @@ class ExamGenerator:
         """Validate and track question"""
         if not question or not question.get('question_text'):
             return False
-        
-        question_text = question['question_text']
+
+        question_text = self._sanitize_generated_text(question['question_text'])
+        question['question_text'] = question_text
         q_type = question.get('question_type')
         ans = question.get('correct_answer')
+        if isinstance(ans, str):
+            ans = self._sanitize_generated_text(ans)
+            question['correct_answer'] = ans
+
+        if isinstance(question.get('options'), list):
+            question['options'] = [
+                self._sanitize_generated_text(opt) if isinstance(opt, str) else opt
+                for opt in question['options']
+            ]
+
+        if q_type in ['multiple_choice', 'true_false', 'fill_in_blank', 'identification']:
+            if self._has_text_artifact(question_text):
+                return False
+
         if ans and isinstance(ans, str):
             ans_clean = ans.strip()
             # Early reject answer leakage for objective types before verification
             if q_type in ['multiple_choice', 'fill_in_blank', 'identification']:
                 if len(ans_clean) > 3 and re.search(re.escape(ans_clean), question_text, flags=re.IGNORECASE):
+                    return False
+            if q_type in ['multiple_choice', 'identification', 'true_false']:
+                if self._is_low_quality_objective_answer(ans_clean, question_type=q_type):
                     return False
         
         if len(question_text.strip()) < 5:
@@ -741,6 +924,11 @@ class ExamGenerator:
         for header in lesson_headers:
             text = re.sub(r'\b' + header + r'\b', '', text, flags=re.IGNORECASE)
 
+        # Remove common slide bullets, OCR glyphs, and decorative symbols that leak
+        # into clues and produce malformed stems.
+        text = re.sub(r'[\u2022\u25cf\u25e6\u25aa\u25a0\u25a1\u25c6\u25c7\u25ba\u25b6\u25c4\u25c0\uf0b7\uf075]', ' ', text)
+        text = re.sub(r'[✔✓]+', ' ', text)
+
         # Unwrap [EQUATION: ...] OMML tags — replace with just the inner expression
         # so question text reads "α" instead of "[EQUATION: α]"
         text = ExamGenerator._clean_equation_text(text)
@@ -794,6 +982,13 @@ class ExamGenerator:
             'traffic', 'data', 'communication', 'device', 'media', 'internet', 'broadcast',
             'entire', 'address', 'frame', 'router', 'route', 'mac', 'ip'
         }
+        question_chunks = [
+            'which', 'what', 'when', 'where', 'why', 'how',
+            'concept', 'idea', 'term', 'statement', 'option',
+            'would', 'should', 'could', 'most', 'best', 'important',
+            'relevant', 'judging', 'evaluating', 'analyzing', 'examining',
+            'case', 'situation', 'involving', 'moral', 'ethical', 'standards',
+        ]
 
         def _greedy_stop_split(tok: str):
             lower = tok.lower()
@@ -824,6 +1019,17 @@ class ExamGenerator:
                         continue
                 # fallback: greedy stopword split; if still single chunk, chunk by pattern
                 parts = _greedy_stop_split(tok)
+                if len(parts) <= 1:
+                    questionish = tok
+                    for chunk in question_chunks:
+                        questionish = re.sub(
+                            rf'(?i){chunk}',
+                            lambda m: f" {m.group(0)} ",
+                            questionish
+                        )
+                    questionish = re.sub(r'\s+', ' ', questionish).strip()
+                    if ' ' in questionish:
+                        parts = questionish.split()
                 if len(parts) <= 1:
                     parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+|.{1,8}', tok)
                 fixed_tokens.extend([p for p in parts if p])
@@ -1099,8 +1305,9 @@ class ExamGenerator:
                 continue
             seen.add(sentence)
             clue = self._create_clean_description(sentence, keyword)
+            clue = self._sanitize_generated_text(clue)
             clue = self._normalize_clue_text(clue)
-            if not clue:
+            if not clue or self._is_low_quality_clue(clue):
                 continue
             if keyword.lower() in clue.lower():
                 continue
@@ -1397,22 +1604,21 @@ class ExamGenerator:
             cleaned_questions = []
             for q in all_questions:
                 qt = q.get('question_text', '')
-                # Apply spaced-character fixer one more time as safety net
-                qt = ExamGenerator._fix_spaced_characters(qt)
+                qt = self._sanitize_generated_text(qt)
                 # Reject questions with remaining squished text > 25 alpha chars
-                if any(len(w.rstrip(".,;:!?'\"")) > 25 and w.rstrip(".,;:!?'\"").isalpha() for w in qt.split()):
+                if self._has_text_artifact(qt):
                     logger.warning(f"  🗑️  Dropping question with squished artifact: {qt[:60]}...")
                     continue
                 q['question_text'] = qt
                 # Also clean correct_answer
                 ans = q.get('correct_answer', '')
                 if ans and ans not in ('True', 'False'):
-                    ans = ExamGenerator._fix_spaced_characters(ans)
+                    ans = self._sanitize_generated_text(ans)
                     q['correct_answer'] = ans
                 # Also clean MCQ options
                 opts = q.get('options')
                 if opts and isinstance(opts, list):
-                    q['options'] = [ExamGenerator._fix_spaced_characters(o) if isinstance(o, str) else o for o in opts]
+                    q['options'] = [self._sanitize_generated_text(o) if isinstance(o, str) else o for o in opts]
                 cleaned_questions.append(q)
 
             if len(cleaned_questions) < len(all_questions):
@@ -2201,6 +2407,8 @@ class ExamGenerator:
             for keyword, score in shuffled_keywords:
                 if len(questions) >= count:
                     break
+                if self._is_low_quality_objective_answer(keyword, question_type='multiple_choice'):
+                    continue
 
                 clue = self._extract_question_clue(clean_text_mcq, keyword)
                 question_text = self._build_mcq_stem_from_clue(clue, bloom_level) if clue else None
@@ -2360,6 +2568,8 @@ class ExamGenerator:
                     )
                     ans = (q.get('correct_answer') or '').strip()
                     if not qt or not ans:
+                        continue
+                    if self._is_low_quality_objective_answer(ans, question_type='multiple_choice'):
                         continue
                     # Skip questions whose correct answer is a generic/short word
                     ans_lower = ans.lower()
@@ -2564,6 +2774,8 @@ class ExamGenerator:
                 kw_key = keyword.lower().strip()
                 if not kw_key or kw_key in seen_keywords:
                     continue
+                if self._is_low_quality_objective_answer(keyword, question_type='true_false'):
+                    continue
                 clue = self._extract_question_clue(clean_text, keyword)
                 if not clue:
                     continue
@@ -2679,6 +2891,8 @@ class ExamGenerator:
                         break
                     def_sent = self._extract_definition_sentence(clean_text, kw)
                     if not def_sent or def_sent in seen_def_sents:
+                        continue
+                    if self._is_low_quality_objective_answer(kw, question_type='true_false'):
                         continue
                     seen_def_sents.add(def_sent)
                     clue = self._extract_question_clue(clean_text, kw)
@@ -3090,6 +3304,8 @@ class ExamGenerator:
                     continue
                 if kw_key in _FIB_SKIP_WORDS:
                     continue
+                if self._is_low_quality_objective_answer(keyword, question_type='fill_in_blank'):
+                    continue
                 if len(kw_key.replace(' ', '')) < 4:
                     continue
 
@@ -3162,6 +3378,8 @@ class ExamGenerator:
                                 blank_word_clean = re.sub(r'[^\w]', '', blank_word)
                                 if not blank_word_clean:
                                     continue
+                                if self._is_low_quality_objective_answer(blank_word_clean, question_type='fill_in_blank'):
+                                    continue
 
                                 blanked_sentence = ' '.join(
                                     '______' if j == blank_index else token.text
@@ -3220,6 +3438,8 @@ class ExamGenerator:
                         break
                     blank_word_clean = re.sub(r'[^\w]', '', blank_word)
                     if not blank_word_clean:
+                        continue
+                    if self._is_low_quality_objective_answer(blank_word_clean, question_type='fill_in_blank'):
                         continue
 
                     blanked_sentence = ' '.join(
@@ -3420,6 +3640,8 @@ class ExamGenerator:
                 kw_lower = keyword.lower().strip()
                 if kw_lower in _IDENTIFICATION_SKIP_WORDS:
                     continue
+                if self._is_low_quality_objective_answer(keyword, question_type='identification'):
+                    continue
                 # Skip single-word answers that are just verb gerunds (ending in -ing, < 8 chars)
                 if len(kw_lower) < 8 and kw_lower.endswith('ing') and ' ' not in kw_lower:
                     continue
@@ -3561,6 +3783,12 @@ class ExamGenerator:
                         precise_answer = qa_answer
                 except Exception:
                     pass
+
+                precise_answer = self._sanitize_generated_text(precise_answer)
+                if self._is_low_quality_objective_answer(precise_answer, question_type='identification'):
+                    precise_answer = self._sanitize_generated_text(keyword)
+                if self._is_low_quality_objective_answer(precise_answer, question_type='identification'):
+                    continue
 
                 # Skip if this answer was already used in another ID question (prevents duplicates)
                 if precise_answer.lower() in _used_id_answers:
@@ -5847,6 +6075,85 @@ class ExamGenerator:
             logger.error(traceback.format_exc())
             return questions, verification_stats
 
+    @staticmethod
+    def _merge_verification_stats(base_stats, new_stats):
+        """Merge verification stats across multiple verification passes."""
+        merged = dict(base_stats or {})
+        for key in ('total', 'verified', 'rejected', 'warnings'):
+            merged[key] = int(merged.get(key, 0)) + int((new_stats or {}).get(key, 0))
+        return merged
+
+    def _refill_verified_question_shortfalls(self, text_content, exam_config, verified_questions, verification_stats):
+        """
+        Refill missing per-type/per-difficulty slots after verification rejects items.
+
+        This keeps the teacher's configured layout intact without using cross-type substitution.
+        """
+        target_configs = exam_config.get('question_types_details', []) or []
+        if not target_configs:
+            return verified_questions, verification_stats
+
+        max_passes = 3
+        for attempt in range(max_passes):
+            deficits = []
+            for qt_config in target_configs:
+                qt_type = qt_config['type']
+                for difficulty, target_count in (qt_config.get('difficulty_distribution') or {}).items():
+                    if target_count <= 0:
+                        continue
+                    current_count = sum(
+                        1 for q in verified_questions
+                        if q.get('question_type') == qt_type and q.get('difficulty_level') == difficulty
+                    )
+                    missing = target_count - current_count
+                    if missing > 0:
+                        deficits.append((qt_config, difficulty, missing))
+
+            if not deficits:
+                logger.info("✅ Post-verification refill not needed — all configured slots are filled.")
+                break
+
+            logger.warning(
+                f"⚠️  Post-verification refill pass {attempt + 1}/{max_passes} "
+                f"starting with {sum(missing for _, _, missing in deficits)} missing slots."
+            )
+
+            gained_this_pass = 0
+            for qt_config, difficulty, missing in deficits:
+                question_type = qt_config['type']
+                points = qt_config['points']
+                bloom_level = qt_config.get('bloom_level', None)
+
+                extra_questions = self._generate_questions_by_type(
+                    text_content=text_content,
+                    question_type=question_type,
+                    difficulty=difficulty,
+                    count=missing,
+                    points=points,
+                    bloom_level=bloom_level,
+                    module_ids=exam_config.get('module_ids', []),
+                )
+                if not extra_questions:
+                    continue
+
+                verified_extra, extra_stats = self._phase5_answer_verification(extra_questions, text_content)
+                verification_stats = self._merge_verification_stats(verification_stats, extra_stats)
+                if not verified_extra:
+                    continue
+
+                verified_questions.extend(verified_extra)
+                gained_this_pass += len(verified_extra)
+                logger.info(
+                    f"  🔄 Refill accepted +{len(verified_extra)} {question_type} "
+                    f"({difficulty}) after verification."
+                )
+
+            if gained_this_pass <= 0:
+                logger.warning("⚠️  Post-verification refill could not recover any additional valid questions.")
+                break
+
+        return verified_questions, verification_stats
+
     def generate_exam(self, module_content, exam_config):
         """
         COMPREHENSIVE 7-PHASE EXAM GENERATION WORKFLOW
@@ -5962,11 +6269,25 @@ class ExamGenerator:
             # ===== PHASE 5: ANSWER VERIFICATION =====
             verified_questions, verification_stats = self._phase5_answer_verification(questions, text_content)
 
+            verified_questions, verification_stats = self._refill_verified_question_shortfalls(
+                text_content=text_content,
+                exam_config=exam_config,
+                verified_questions=verified_questions,
+                verification_stats=verification_stats,
+            )
+
             if len(verified_questions) == 0:
                 return {
                     'success': False,
                     'message': 'No questions passed verification'
                 }
+
+            target_total = exam_config.get('num_questions', len(verified_questions))
+            if len(verified_questions) < target_total:
+                logger.warning(
+                    f"⚠️  Verified output remains short after refill: "
+                    f"{len(verified_questions)}/{target_total}"
+                )
 
             # Enforce requested Bloom distribution for TOS/reporting.
             verified_questions = self._apply_target_bloom_distribution(
@@ -6022,11 +6343,6 @@ class ExamGenerator:
                     if not instruction_text:
                         continue
 
-                    original_text = str(question.get('question_text') or '').strip()
-                    question['question_text'] = (
-                        f"{instruction_text}\n\n{original_text}"
-                        if original_text else instruction_text
-                    )
                     question['section_instruction'] = instruction_text
                     seen_instruction_types.add(q_type)
 
