@@ -109,7 +109,7 @@ class AdminService:
                 'site_name': 'AWEGen Exam System',
                 'site_description': 'AI-Assisted Written Exam Generator',
                 'admin_email': 'admin@awegen.com',
-                'max_file_size': 16777216,  # 16MB in bytes
+                'max_file_size': 52428800,  # 50MB in bytes
                 'allowed_file_types': ['pdf', 'doc', 'docx', 'ppt', 'pptx', 'txt'],
                 'session_timeout': 3600,  # 1 hour in seconds
                 'maintenance_mode': False

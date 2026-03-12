@@ -32,7 +32,7 @@ except ImportError:
     logger.warning("pytesseract not installed — image OCR unavailable")
 
 IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff', 'webp'}
-MAX_FILE_MB = float(os.getenv("AI_MAX_FILE_MB", "25"))
+MAX_FILE_MB = float(os.getenv("AI_MAX_FILE_MB", "50"))
 MAX_PDF_PAGES = int(os.getenv("AI_MAX_PDF_PAGES", "500"))
 
 

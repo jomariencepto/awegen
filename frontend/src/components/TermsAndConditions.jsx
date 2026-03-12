@@ -28,7 +28,7 @@ const SECTIONS = [
     title: '4. File Upload Restrictions',
     items: [
       'Supported file formats: PDF, DOCX',
-      'Maximum file size per upload: 16 MB.',
+      'Maximum file size per upload: 50 MB.',
       'Image files (JPG, PNG, GIF, BMP, TIFF, WEBP) are accepted as supplementary materials only.',
       'Files containing executable code, scripts, or malware will be rejected and may lead to account suspension.',
     ],

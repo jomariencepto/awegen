@@ -107,7 +107,7 @@ function UploadModule() {
     if (!file) return;
 
     const allowedTypes = ['pdf', 'doc', 'docx'];
-    const maxSize = 16 * 1024 * 1024;
+    const maxSize = 50 * 1024 * 1024;
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     if (!allowedTypes.includes(ext)) {
@@ -116,7 +116,7 @@ function UploadModule() {
     }
 
     if (file.size > maxSize) {
-      toast.error(`File too large (max 16MB): ${file.name}`);
+      toast.error(`File too large (max 50MB): ${file.name}`);
       return;
     }
 
@@ -165,7 +165,7 @@ function UploadModule() {
       const status = error.response?.status;
       const message = (
         error.response?.data?.message ||
-        (status === 413 ? 'File too large. Maximum upload size is 16 MB.' : null) ||
+        (status === 413 ? 'File too large. Maximum upload size is 50 MB.' : null) ||
         (status === 403 ? 'Your account does not have permission to upload modules.' : null) ||
         'Failed to upload module'
       );
@@ -285,7 +285,7 @@ function UploadModule() {
                       <span className="font-semibold">Click to upload</span> or drag and drop
                     </p>
                     <p className="text-xs text-gray-500">
-                      PDF, DOC, DOCX, PPT, PPTX, TXT (MAX. 16MB)
+                      PDF, DOC, DOCX, PPT, PPTX, TXT (MAX. 50MB)
                     </p>
                   </div>
                   <input

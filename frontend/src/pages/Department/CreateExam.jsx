@@ -310,11 +310,11 @@ function CreateExam() {
     const files = Array.from(e.target.files);
     if (!files.length) return;
     const allowed  = ['pdf', 'doc', 'docx'];
-    const maxSize  = 16 * 1024 * 1024;
+    const maxSize  = 50 * 1024 * 1024;
     const invalid  = files.filter(f => !allowed.includes(f.name.split('.').pop().toLowerCase()));
     if (invalid.length) { toast.error(`Invalid file(s): ${invalid.map(f => f.name).join(', ')}`); return; }
     const oversize = files.filter(f => f.size > maxSize);
-    if (oversize.length) { toast.error(`File too large (max 16 MB): ${oversize.map(f => f.name).join(', ')}`); return; }
+    if (oversize.length) { toast.error(`File too large (max 50 MB): ${oversize.map(f => f.name).join(', ')}`); return; }
     setSelectedFiles(prev => [...prev, ...files]);
   };
 

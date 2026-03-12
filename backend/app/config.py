@@ -53,7 +53,7 @@ class Config:
 
     # File uploads
     UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "uploads")
-    MAX_CONTENT_LENGTH = 16 * 1024 * 1024  # 16 MB
+    MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB
 
     # NLP paths
     NLP_MODEL_PATH = os.environ.get("NLP_MODEL_PATH", "models/nlp")

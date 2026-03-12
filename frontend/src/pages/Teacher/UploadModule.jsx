@@ -204,7 +204,7 @@ function UploadModule() {
 
     const allowedTypes = ['pdf', 'doc', 'docx'];
                           
-    const maxSize = 16 * 1024 * 1024;
+    const maxSize = 50 * 1024 * 1024;
 
     const invalidFiles = files.filter(file => {
       const ext = file.name.split('.').pop().toLowerCase();
@@ -218,7 +218,7 @@ function UploadModule() {
 
     const oversizedFiles = files.filter(file => file.size > maxSize);
     if (oversizedFiles.length) {
-      toast.error(`File too large (max 16MB): ${oversizedFiles.map(f => f.name).join(', ')}`);
+      toast.error(`File too large (max 50MB): ${oversizedFiles.map(f => f.name).join(', ')}`);
       return;
     }
 
