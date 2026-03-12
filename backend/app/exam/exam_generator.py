@@ -967,6 +967,28 @@ class ExamGenerator:
 
         return text.strip()
 
+    def _prepare_generation_text(self, text):
+        """
+        Prefer the standard cleaned text, but fall back to a lightly normalized raw
+        version when aggressive cleaning strips the module to empty.
+        """
+        clean_text = self._clean_text_for_questions(text)
+        if clean_text:
+            return clean_text
+
+        raw_text = str(text or '')
+        if not raw_text.strip():
+            return ''
+
+        raw_text = self._fix_spaced_characters(raw_text)
+        raw_text = ExamGenerator._clean_equation_text(raw_text)
+        raw_text = re.sub(r'\s+', ' ', raw_text).strip()
+        if raw_text:
+            logger.warning(
+                "Cleaned text was empty; using lightly normalized raw text for generation"
+            )
+        return raw_text
+
     @staticmethod
     def _desquish_long_tokens(text):
         """
@@ -2796,7 +2818,7 @@ class ExamGenerator:
 
         try:
             # Clean text first
-            clean_text = self._clean_text_for_questions(text_content)
+            clean_text = self._prepare_generation_text(text_content)
 
             sentences = [
                 ExamGenerator._desquish_long_tokens(s) + ('.' if not s.endswith('.') else '')
@@ -2814,7 +2836,11 @@ class ExamGenerator:
                         "        ℹ️  No valid text sentences — using DB questions for T/F"
                     )
                     db_qs = self._query_module_questions(
-                        module_ids, None, difficulty, count * 4, points=points
+                        module_ids,
+                        ['factual', 'true_false', 'fill_in_blank'],
+                        difficulty,
+                        count * 4,
+                        points=points
                     )
                     # Exclude template-prompt questions — they produce terrible T/F statements
                     # e.g. "Explain the main concept..." → False: "does not explain the main concept..."
@@ -2822,6 +2848,11 @@ class ExamGenerator:
                         r'^(Explain|Evaluate|Compute|Calculate|Compare|Critically|Analyze|'
                         r'Describe|Consider|Assess|Find|Determine|Show|Given|Formulate|'
                         r'Identify|What conclusions|What can be drawn)',
+                        re.IGNORECASE
+                    )
+                    _TF_QUESTIONISH = re.compile(
+                        r'^(?:In\s+section\b|Which\b|What\b|Who\b|When\b|Where\b|Why\b|How\b|'
+                        r'Identify\b|Write\b|Give\b|Name\b|Define\b)',
                         re.IGNORECASE
                     )
                     db_qs = [q for q in db_qs if not _TF_SKIP.match(q.get('question_text', '').strip())]
@@ -2835,6 +2866,7 @@ class ExamGenerator:
                         ans = (q.get('correct_answer') or '').strip()
                         if not qt or not ans:
                             continue
+                        had_blank = bool(re.search(r'_{5,}', qt))
                         # Fill blank to get a complete declarative sentence
                         stmt = re.sub(r'_{5,}', ans, qt, count=1)
                         # Strip leading instruction prefix ("Complete the sentence:", etc.)
@@ -2848,6 +2880,10 @@ class ExamGenerator:
                         stmt = ExamGenerator._desquish_long_tokens(stmt)
                         if len(stmt.split()) < 3:
                             continue
+                        if not had_blank:
+                            stmt = re.sub(r'^\s*True\s+or\s+False\s*:?\s*', '', stmt, flags=re.IGNORECASE).strip()
+                            if stmt.endswith('?') or _TF_QUESTIONISH.match(stmt):
+                                continue
                         # Reject if still contains concatenated artifact (wordninja failed)
                         if any(len(w) > 20 and w.isalpha() for w in stmt.split()):
                             continue
@@ -3378,7 +3414,7 @@ class ExamGenerator:
                 count -= len(questions)
 
             # Clean text first
-            clean_text = self._clean_text_for_questions(text_content)
+            clean_text = self._prepare_generation_text(text_content)
 
             sentences = [
                 s for s in self._sent_tokenize(clean_text)
@@ -3543,19 +3579,19 @@ class ExamGenerator:
                     except Exception as nlp_error:
                         logger.warning(f"        ⚠️ spaCy processing failed, using fallback: {nlp_error}")
 
-            # FALLBACK: Original method if spaCy fails
-            words = sentence.split()
-            blank_candidates = []
-            for i, word in enumerate(words):
-                word_clean = re.sub(r'[^\w]', '', word).lower()
+                # FALLBACK: Original method if spaCy fails or finds no suitable blank candidates
+                words = sentence.split()
+                blank_candidates = []
+                for i, word in enumerate(words):
+                    word_clean = re.sub(r'[^\w]', '', word).lower()
 
-                if (len(word_clean) > 4 and
-                        word_clean not in _FIB_SKIP_WORDS and
-                        word_clean not in ['which', 'where', 'there', 'these', 'those', 'their', 'would', 'could', 'should'] and
-                        i not in [0, len(words)-1]):
+                    if (len(word_clean) > 4 and
+                            word_clean not in _FIB_SKIP_WORDS and
+                            word_clean not in ['which', 'where', 'there', 'these', 'those', 'their', 'would', 'could', 'should'] and
+                            i not in [0, len(words)-1]):
 
-                        priority = 2 if word_clean in keyword_list else 1
-                        blank_candidates.append((i, word, priority))
+                            priority = 2 if word_clean in keyword_list else 1
+                            blank_candidates.append((i, word, priority))
 
                 if not blank_candidates:
                     continue
@@ -3705,7 +3741,7 @@ class ExamGenerator:
 
             # Extract important keywords
             top_n = count * 5
-            clean_text = self._clean_text_for_questions(text_content)
+            clean_text = self._prepare_generation_text(text_content)
 
             self.tfidf_engine.add_document(clean_text)
             tfidf_keywords = self.tfidf_engine.extract_keywords(clean_text, top_n=top_n)
