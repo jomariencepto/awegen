@@ -705,10 +705,20 @@ def get_exam_tos(exam_id):
                 "message": "No questions found for this exam"
             }), 404
         
-        # Convert questions to dict format
+        # Convert questions to dict format with normalized text
+        from app.exam.service import ExamService
         questions_data = []
         for q in questions:
             question_dict = q.to_dict()
+            # Normalize question text
+            if 'question_text' in question_dict:
+                question_dict['question_text'] = ExamService._normalize_question_text_for_client(
+                    question_dict['question_text']
+                )
+            if 'correct_answer' in question_dict:
+                question_dict['correct_answer'] = ExamService._normalize_question_text_for_client(
+                    question_dict['correct_answer']
+                )
             # Parse options if stored as JSON string
             if isinstance(question_dict.get('options'), str):
                 try:
@@ -896,9 +906,21 @@ def get_question(question_id):
                 "message": "Question not found"
             }), 404
         
+        from app.exam.service import ExamService
+        question_dict = question.to_dict()
+        # Normalize question text
+        if 'question_text' in question_dict:
+            question_dict['question_text'] = ExamService._normalize_question_text_for_client(
+                question_dict['question_text']
+            )
+        if 'correct_answer' in question_dict:
+            question_dict['correct_answer'] = ExamService._normalize_question_text_for_client(
+                question_dict['correct_answer']
+            )
+        
         return jsonify({
             "success": True,
-            "question": question.to_dict()
+            "question": question_dict
         }), 200
         
     except Exception as e:

@@ -1561,13 +1561,13 @@ class ExamGenerator:
                 return True
 
             ratio = SequenceMatcher(None, q_norm, s_norm).ratio()
-            if ratio >= 0.97:
+            if ratio >= 0.94:  # Relaxed from 0.97 to allow more legitimate paraphrases
                 return True
 
             q_words = set(q_norm.split())
             s_words = set(s_norm.split())
             overlap = len(q_words & s_words) / max(min(len(q_words), len(s_words)), 1)
-            if overlap >= 0.96 and abs(len(q_words) - len(s_words)) <= 2:
+            if overlap >= 0.92 and abs(len(q_words) - len(s_words)) <= 3:  # Relaxed from 0.96/2 to 0.92/3
                 return True
 
         return False
@@ -6234,7 +6234,7 @@ class ExamGenerator:
         if not target_configs:
             return verified_questions, verification_stats
 
-        max_passes = 5
+        max_passes = 10  # Increased from 5 to handle higher rejection rates
         for attempt in range(max_passes):
             deficits = []
             for qt_config in target_configs:
