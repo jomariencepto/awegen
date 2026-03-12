@@ -384,6 +384,15 @@ class ExamGenerator:
 
         best = max(deduped, key=_quality_score)
         best = re.sub(r'\s+', ' ', best).strip()
+
+        # Collapse hallucinatory spaced-letter artifacts that sometimes appear when
+        # OCR / generation produces each character separated by whitespace.
+        # Example: "W h i c h   c o n c e p t" → "Which concept".
+        best = re.sub(
+            r'(?<!\w)(?:[A-Za-z]\s){4,}[A-Za-z](?!\w)',
+            lambda m: m.group(0).replace(' ', ''),
+            best
+        )
         return best
 
     def _is_low_quality_objective_answer(self, answer, question_type=None):
@@ -1561,13 +1570,15 @@ class ExamGenerator:
                 return True
 
             ratio = SequenceMatcher(None, q_norm, s_norm).ratio()
-            if ratio >= 0.94:  # Relaxed from 0.97 to allow more legitimate paraphrases
+            # Allow some amount of shared wording: only reject when the similarity is extremely high.
+            # This reduces false positives when our template-based stems are close to source text.
+            if ratio >= 0.985:  # raised threshold to allow more legitimate paraphrases
                 return True
 
             q_words = set(q_norm.split())
             s_words = set(s_norm.split())
             overlap = len(q_words & s_words) / max(min(len(q_words), len(s_words)), 1)
-            if overlap >= 0.92 and abs(len(q_words) - len(s_words)) <= 3:  # Relaxed from 0.96/2 to 0.92/3
+            if overlap >= 0.98 and abs(len(q_words) - len(s_words)) <= 4:
                 return True
 
         return False
