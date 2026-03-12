@@ -227,7 +227,7 @@ function DepartmentExamPreview() {
                     <div className="flex-1">
                       <div className="flex items-start justify-between gap-3">
                         <p className="text-base font-medium text-gray-900 leading-relaxed">
-                          <MathText text={question.question_text} />
+                          <span className="whitespace-pre-wrap">{question.question_text}</span>
                         </p>
                         {question.image_id && (
                           <QuestionImage

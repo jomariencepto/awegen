@@ -34,7 +34,6 @@ import api from '../../utils/api';
 import { useAuth } from '../../context/AuthContext';
 import { Progress } from '../../components/ui/progress';
 import QuestionTypeConfigWithDifficulty from '../../components/QuestionTypeConfigWithDifficulty';
-import MathText from '../../components/MathText';
 import {
   clampTeachingHours,
   COVERAGE_REFERENCE_TEXT,
@@ -48,17 +47,6 @@ import {
 const toTitleCase = (value) => {
   if (typeof value !== 'string') return '';
   return value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
-};
-
-const hasPreviewMathContent = (text) => {
-  const value = typeof text === 'string' ? text.trim() : '';
-  if (!value) return false;
-
-  if (/(\$\$[\s\S]+?\$\$|\$[^$\n]+\$|\[EQUATION:)/u.test(value)) return true;
-  if (/\\(?:frac|sqrt|sum|int|alpha|beta|gamma|theta|pi|sigma)/u.test(value)) return true;
-  if (/[\u2211\u222b\u221a\u03c0\u03bc\u03c3\u03b1\u03b2\u03b3\u03b4\u03b8\u03bb\u00b1\u2264\u2265\u221e]/u.test(value)) return true;
-
-  return /(?:\b\d+\s*[-+*/=^]\s*\d+\b|\b[A-Za-z]\s*=\s*[-+()A-Za-z0-9]+\b|\b[A-Za-z]\^[A-Za-z0-9]+\b)/.test(value);
 };
 
   const EXAM_ERROR_FIELD_LABELS = {
@@ -1074,9 +1062,7 @@ function CreateExam({ mode = 'teacher' }) {
                           <div className="question-number">{i + 1}</div>
                           <div className="question-body">
                             <p className="question-text">
-                              {(q.question_type === 'true_false' || q.question_type === 'identification' || !hasPreviewMathContent(q.question_text))
-                                ? <span className="question-plain-text">{q.question_text}</span>
-                                : <MathText text={q.question_text} />}
+                              <span className="question-plain-text">{q.question_text}</span>
                             </p>
                             <span className="question-points">{q.points} pts</span>
                           </div>

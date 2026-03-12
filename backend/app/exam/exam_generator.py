@@ -1011,16 +1011,27 @@ class ExamGenerator:
 
         fixed_tokens = []
         for tok in text.split():
-            if len(tok) > 20 and tok.isalpha():
+            leading = re.match(r'^\W+', tok)
+            trailing = re.search(r'\W+$', tok)
+            lead = leading.group(0) if leading else ''
+            trail = trailing.group(0) if trailing else ''
+            core_end = len(tok) - len(trail) if trail else len(tok)
+            core = tok[len(lead):core_end]
+
+            if len(core) > 20 and core.isalpha():
                 if has_wordninja:
-                    parts = splitter(tok)
+                    parts = splitter(core)
                     if len(parts) > 1:
+                        if lead:
+                            parts[0] = f"{lead}{parts[0]}"
+                        if trail:
+                            parts[-1] = f"{parts[-1]}{trail}"
                         fixed_tokens.extend(parts)
                         continue
                 # fallback: greedy stopword split; if still single chunk, chunk by pattern
-                parts = _greedy_stop_split(tok)
+                parts = _greedy_stop_split(core)
                 if len(parts) <= 1:
-                    questionish = tok
+                    questionish = core
                     for chunk in question_chunks:
                         questionish = re.sub(
                             rf'(?i){chunk}',
@@ -1031,7 +1042,11 @@ class ExamGenerator:
                     if ' ' in questionish:
                         parts = questionish.split()
                 if len(parts) <= 1:
-                    parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+|.{1,8}', tok)
+                    parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+|.{1,8}', core)
+                if lead and parts:
+                    parts[0] = f"{lead}{parts[0]}"
+                if trail and parts:
+                    parts[-1] = f"{parts[-1]}{trail}"
                 fixed_tokens.extend([p for p in parts if p])
             else:
                 fixed_tokens.append(tok)
@@ -1272,6 +1287,42 @@ class ExamGenerator:
         clue = clue.rstrip('.')
         return clue.strip()
 
+    @staticmethod
+    def _compress_clue_text(clue, max_words=14):
+        """Shorten long clue text so rewritten stems do not mirror the source sentence."""
+        clue = ExamGenerator._normalize_clue_text(clue)
+        if not clue:
+            return None
+
+        original = clue
+        clue = re.sub(r'\([^)]*\)', '', clue)
+        clue = re.sub(r'\s+', ' ', clue).strip(' ,;:-')
+
+        split_markers = [
+            r'\b(?:using|through|via|including|especially|because|since|although|while)\b',
+            r'\b(?:which|who|whom|whose|where|when|that)\b',
+        ]
+        for marker in split_markers:
+            parts = re.split(marker, clue, maxsplit=1, flags=re.IGNORECASE)
+            if len(parts) == 2 and len(parts[0].split()) >= 4:
+                clue = parts[0].strip(' ,;:-')
+                break
+
+        words = clue.split()
+        if len(words) > max_words:
+            clue = ' '.join(words[:max_words]).strip(' ,;:-')
+            clue = re.sub(
+                r'\b(?:a|an|the|and|or|of|in|on|at|for|to|with|by|from|into|onto)\s*$',
+                '',
+                clue,
+                flags=re.IGNORECASE,
+            ).strip(' ,;:-')
+
+        if len(clue.split()) < 4:
+            clue = original
+
+        return ExamGenerator._normalize_clue_text(clue)
+
     def _extract_question_clue(self, text, keyword):
         """
         Return a short clue derived from module text without exposing the answer.
@@ -1307,6 +1358,7 @@ class ExamGenerator:
             clue = self._create_clean_description(sentence, keyword)
             clue = self._sanitize_generated_text(clue)
             clue = self._normalize_clue_text(clue)
+            clue = self._compress_clue_text(clue)
             if not clue or self._is_low_quality_clue(clue):
                 continue
             if keyword.lower() in clue.lower():
@@ -1403,6 +1455,72 @@ class ExamGenerator:
         ]
         return random.choice(templates).format(keyword=keyword, clue=clue)
 
+    def _build_identification_stem_from_clue(self, clue, bloom_level):
+        """Build an identification stem from a clue without exposing the answer."""
+        clue = self._normalize_clue_text(clue)
+        if not clue:
+            return None
+
+        templates = {
+            'remembering': [
+                "Identify the term described by {clue}.",
+                "What term matches this description: {clue}?",
+            ],
+            'understanding': [
+                "What concept is best explained by {clue}?",
+                "Identify the idea described in this explanation: {clue}.",
+            ],
+            'applying': [
+                "In a situation involving {clue}, what concept should be identified?",
+                "What term is most relevant to a case involving {clue}?",
+            ],
+            'analyzing': [
+                "When analyzing a case involving {clue}, what concept is central?",
+                "Identify the concept most relevant to examining {clue}.",
+            ],
+            'evaluating': [
+                "When judging a case involving {clue}, what concept should be identified?",
+                "What term is most important when evaluating {clue}?",
+            ],
+            'creating': [
+                "When designing a response to {clue}, what concept should guide it?",
+                "Identify the key concept needed to create a solution for {clue}.",
+            ],
+        }
+        choices = templates.get(bloom_level, templates['remembering'])
+        return random.choice(choices).format(clue=clue)
+
+    def _rewrite_copied_objective_stem(self, question, text_content):
+        """Attempt to rewrite copied objective stems into clue-based variants."""
+        q_type = str(question.get('question_type') or '').strip()
+        if q_type not in {'multiple_choice', 'fill_in_blank', 'identification'}:
+            return None
+
+        answer = str(question.get('correct_answer') or '').strip()
+        if not answer:
+            return None
+
+        bloom_level = question.get('bloom_level') or 'remembering'
+        clue = self._extract_question_clue(text_content, answer)
+        if not clue:
+            return None
+
+        if q_type == 'multiple_choice':
+            rewritten = self._build_mcq_stem_from_clue(clue, bloom_level)
+        elif q_type == 'fill_in_blank':
+            rewritten = self._build_fill_in_blank_stem_from_clue(clue, bloom_level)
+        else:
+            rewritten = self._build_identification_stem_from_clue(clue, bloom_level)
+
+        rewritten = self._sanitize_generated_text(rewritten)
+        if not rewritten:
+            return None
+        if self._question_looks_copied_from_source(rewritten, text_content):
+            return None
+        if len(answer) >= 4 and re.search(re.escape(answer), rewritten, flags=re.IGNORECASE):
+            return None
+        return rewritten
+
     @staticmethod
     def _normalize_for_copy_check(text):
         """Normalize text so copied-source detection ignores wrappers and punctuation."""
@@ -1443,13 +1561,13 @@ class ExamGenerator:
                 return True
 
             ratio = SequenceMatcher(None, q_norm, s_norm).ratio()
-            if ratio >= 0.96:
+            if ratio >= 0.97:
                 return True
 
             q_words = set(q_norm.split())
             s_words = set(s_norm.split())
             overlap = len(q_words & s_words) / max(min(len(q_words), len(s_words)), 1)
-            if overlap >= 0.94 and abs(len(q_words) - len(s_words)) <= 2:
+            if overlap >= 0.96 and abs(len(q_words) - len(s_words)) <= 2:
                 return True
 
         return False
@@ -5995,8 +6113,16 @@ class ExamGenerator:
 
                 if q_type in ['multiple_choice', 'true_false', 'fill_in_blank', 'identification']:
                     if self._question_looks_copied_from_source(q_text, text_content):
-                        verification_passed = False
-                        logger.warning(f"  REJECT Q{idx+1}: Question text copies the source too closely")
+                        rewritten_stem = self._rewrite_copied_objective_stem(question, text_content)
+                        if rewritten_stem:
+                            q_text = rewritten_stem
+                            question['question_text'] = rewritten_stem
+                            warnings.append("Stem rewritten during verification to reduce source copying")
+                            verification_stats['warnings'] += 1
+                            logger.info(f"  🔄 Q{idx+1}: Rewrote copied stem during verification")
+                        else:
+                            verification_passed = False
+                            logger.warning(f"  REJECT Q{idx+1}: Question text copies the source too closely")
 
                 # Avoid generic template stems that produced poor questions.
                 # Keep as warning-only in balanced mode to reduce over-rejection.
@@ -6138,12 +6264,13 @@ class ExamGenerator:
                 question_type = qt_config['type']
                 points = qt_config['points']
                 bloom_level = qt_config.get('bloom_level', None)
+                request_count = missing + min(max(missing, 1), 4)
 
                 extra_questions = self._generate_questions_by_type(
                     text_content=text_content,
                     question_type=question_type,
                     difficulty=difficulty,
-                    count=missing,
+                    count=request_count,
                     points=points,
                     bloom_level=bloom_level,
                     module_ids=exam_config.get('module_ids', []),
@@ -6156,11 +6283,15 @@ class ExamGenerator:
                 if not verified_extra:
                     continue
 
-                verified_questions.extend(verified_extra)
-                gained_this_pass += len(verified_extra)
+                accepted_extra = verified_extra[:missing]
+                if not accepted_extra:
+                    continue
+
+                verified_questions.extend(accepted_extra)
+                gained_this_pass += len(accepted_extra)
                 logger.info(
-                    f"  🔄 Refill accepted +{len(verified_extra)} {question_type} "
-                    f"({difficulty}) after verification."
+                    f"  🔄 Refill accepted +{len(accepted_extra)} {question_type} "
+                    f"({difficulty}) after verification from {len(extra_questions)} candidates."
                 )
 
             if gained_this_pass <= 0:

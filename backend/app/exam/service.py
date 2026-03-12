@@ -67,6 +67,108 @@ class ExamService:
         return body_text if looks_like_instruction else normalized
 
     @staticmethod
+    def _join_spaced_letters_for_client(text):
+        """Collapse OCR-style spaced letters so they can be repaired normally."""
+        if text is None:
+            return None
+        return re.sub(
+            r'(?<!\w)(?:[A-Za-z]\s+){4,}[A-Za-z](?!\w)',
+            lambda match: re.sub(r'\s+', '', match.group(0)),
+            str(text),
+        )
+
+    @staticmethod
+    def _desquish_display_tokens(text):
+        """Split long concatenated tokens for preview/read responses."""
+        if text is None:
+            return None
+
+        try:
+            import wordninja
+            splitter = wordninja.split
+            has_wordninja = True
+        except ImportError:
+            splitter = None
+            has_wordninja = False
+
+        stopwords = {
+            'the', 'and', 'to', 'of', 'in', 'for', 'with', 'on', 'that', 'this', 'these', 'those',
+            'is', 'are', 'was', 'were', 'not', 'network', 'routing', 'update', 'updates',
+            'traffic', 'data', 'communication', 'device', 'media', 'internet', 'broadcast',
+            'entire', 'address', 'frame', 'router', 'route', 'mac', 'ip',
+        }
+        question_chunks = [
+            'which', 'what', 'when', 'where', 'why', 'how',
+            'concept', 'idea', 'term', 'statement', 'option',
+            'would', 'should', 'could', 'most', 'best', 'important',
+            'relevant', 'judging', 'evaluating', 'analyzing', 'examining',
+            'case', 'situation', 'involving', 'moral', 'ethical', 'standards',
+        ]
+
+        def _greedy_stop_split(token):
+            lower = token.lower()
+            idx = 0
+            parts = []
+            for_stopwords = sorted(stopwords, key=len, reverse=True)
+            while idx < len(token):
+                matched = None
+                for word in for_stopwords:
+                    if lower.startswith(word, idx):
+                        matched = token[idx:idx + len(word)]
+                        break
+                if matched:
+                    parts.append(matched)
+                    idx += len(matched)
+                else:
+                    parts.append(token[idx:idx + 6])
+                    idx += 6
+            return [part for part in parts if part]
+
+        repaired_tokens = []
+        for token in str(text).split():
+            leading = re.match(r'^\W+', token)
+            trailing = re.search(r'\W+$', token)
+            lead = leading.group(0) if leading else ''
+            trail = trailing.group(0) if trailing else ''
+            core_end = len(token) - len(trail) if trail else len(token)
+            core = token[len(lead):core_end]
+
+            if len(core) > 20 and core.isalpha():
+                if has_wordninja:
+                    parts = splitter(core)
+                    if len(parts) > 1:
+                        if lead:
+                            parts[0] = f"{lead}{parts[0]}"
+                        if trail:
+                            parts[-1] = f"{parts[-1]}{trail}"
+                        repaired_tokens.extend(parts)
+                        continue
+
+                parts = _greedy_stop_split(core)
+                if len(parts) <= 1:
+                    questionish = core
+                    for chunk in question_chunks:
+                        questionish = re.sub(
+                            rf'(?i){chunk}',
+                            lambda match: f" {match.group(0)} ",
+                            questionish,
+                        )
+                    questionish = re.sub(r'\s+', ' ', questionish).strip()
+                    if ' ' in questionish:
+                        parts = questionish.split()
+                if len(parts) <= 1:
+                    parts = re.findall(r'[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+|.{1,8}', core)
+                if lead and parts:
+                    parts[0] = f"{lead}{parts[0]}"
+                if trail and parts:
+                    parts[-1] = f"{parts[-1]}{trail}"
+                repaired_tokens.extend(part for part in parts if part)
+            else:
+                repaired_tokens.append(token)
+
+        return ' '.join(repaired_tokens)
+
+    @staticmethod
     def _normalize_question_text_for_client(text, strip_section_instruction=False):
         """Clean legacy display artifacts without changing stored database text."""
         if text is None:
@@ -80,6 +182,12 @@ class ExamService:
             r'[\u2022\u25cf\u25e6\u25aa\u25a0\u25a1\u25ab\u25ad\u25fb\u25fc\u25fd\u25fe\uf0b7\uf075]',
             ' ',
             cleaned,
+        )
+        cleaned = '\n'.join(
+            ExamService._desquish_display_tokens(
+                ExamService._join_spaced_letters_for_client(line)
+            )
+            for line in cleaned.split('\n')
         )
         cleaned = re.sub(r'[ \t]+', ' ', cleaned)
         cleaned = re.sub(r' *\n *', '\n', cleaned)

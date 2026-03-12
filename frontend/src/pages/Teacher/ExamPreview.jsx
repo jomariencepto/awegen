@@ -150,14 +150,14 @@ function ExamPreview() {
                     {index + 1}.
                   </span>
 
-                  <div className="flex-1">
-                    <p className="mb-3 text-gray-900 font-medium leading-relaxed">
-                      <MathText text={question.question_text} />
-                    </p>
-                    {question.image_id && (
-                      <QuestionImage
-                        imageId={question.image_id}
-                        moduleId={question.image_module_id}
+                    <div className="flex-1">
+                      <p className="mb-3 text-gray-900 font-medium leading-relaxed">
+                        <span className="whitespace-pre-wrap">{question.question_text}</span>
+                      </p>
+                      {question.image_id && (
+                        <QuestionImage
+                          imageId={question.image_id}
+                          moduleId={question.image_module_id}
                       />
                     )}
 
