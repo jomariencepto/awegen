@@ -1623,7 +1623,7 @@ class ExamGenerator:
                 return None
             
             text_content = self._extract_text_content(module_content)
-            text_content = self._clean_text_for_questions(text_content)
+            text_content = self._prepare_generation_text(text_content)
             logger.info(f"📄 Content length: {len(text_content)} characters")
 
             # Module IDs passed from the service so problem_solving can pull from DB
@@ -2337,7 +2337,7 @@ class ExamGenerator:
             ps_questions = self._generate_problem_solving(text_content, difficulty, count, points,
                                                           module_ids=module_ids)
             if len(ps_questions) >= count:
-                return ps_questions
+                return ps_questions[:count]
             # Not enough computation questions (e.g. no equations in module) — fall back to
             # the base question type so the exam is not left short.
             remaining = count - len(ps_questions)
@@ -2352,10 +2352,12 @@ class ExamGenerator:
             )
             combined = ps_questions + fallback
             if auto_bloom:
-                return self._auto_classify_bloom_levels(combined)
+                combined = self._auto_classify_bloom_levels(combined)
+                return combined[:count]
             if random_bloom:
-                return self._randomize_bloom_levels(combined, difficulty)
-            return combined
+                combined = self._randomize_bloom_levels(combined, difficulty)
+                return combined[:count]
+            return combined[:count]
 
         resolved_bloom = self._resolve_bloom_level(None if auto_bloom else bloom_level, difficulty)
         try:
@@ -2364,10 +2366,12 @@ class ExamGenerator:
                 resolved_bloom, module_ids
             )
             if auto_bloom:
-                return self._auto_classify_bloom_levels(generated)
+                generated = self._auto_classify_bloom_levels(generated)
+                return generated[:count]
             if random_bloom:
-                return self._randomize_bloom_levels(generated, difficulty)
-            return generated
+                generated = self._randomize_bloom_levels(generated, difficulty)
+                return generated[:count]
+            return (generated or [])[:count]
         except Exception as e:
             logger.error(f"Error: {str(e)}")
             return []
@@ -6353,6 +6357,49 @@ class ExamGenerator:
 
         return verified_questions, verification_stats
 
+    def _trim_questions_to_requested_layout(self, questions, exam_config):
+        """Trim overflow so output never exceeds the teacher-configured per-type layout."""
+        target_configs = exam_config.get('question_types_details', []) or []
+        if not questions or not target_configs:
+            return questions
+
+        quotas = {}
+        for qt_config in target_configs:
+            qt_type = qt_config.get('type')
+            for difficulty, target_count in (qt_config.get('difficulty_distribution') or {}).items():
+                quotas[(qt_type, difficulty)] = max(int(target_count or 0), 0)
+
+        used_counts = {}
+        kept_questions = []
+        dropped_questions = 0
+
+        for question in questions:
+            key = (question.get('question_type'), question.get('difficulty_level'))
+            quota = quotas.get(key)
+            if quota is None:
+                dropped_questions += 1
+                continue
+
+            current = used_counts.get(key, 0)
+            if current >= quota:
+                dropped_questions += 1
+                continue
+
+            kept_questions.append(question)
+            used_counts[key] = current + 1
+
+        target_total = int(exam_config.get('num_questions') or 0)
+        if target_total > 0 and len(kept_questions) > target_total:
+            dropped_questions += len(kept_questions) - target_total
+            kept_questions = kept_questions[:target_total]
+
+        if dropped_questions > 0:
+            logger.warning(
+                f"⚠️  Trimmed {dropped_questions} overflow questions to match the configured exam layout."
+            )
+
+        return kept_questions
+
     def generate_exam(self, module_content, exam_config):
         """
         COMPREHENSIVE 7-PHASE EXAM GENERATION WORKFLOW
@@ -6473,6 +6520,10 @@ class ExamGenerator:
                 exam_config=exam_config,
                 verified_questions=verified_questions,
                 verification_stats=verification_stats,
+            )
+            verified_questions = self._trim_questions_to_requested_layout(
+                verified_questions,
+                exam_config
             )
 
             if len(verified_questions) == 0:

@@ -2,7 +2,7 @@ import os
 import sys
 import time
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 
 def wait_for_database():
@@ -37,6 +37,21 @@ def initialize_tables():
     app = create_app(flask_env)
     with app.app_context():
         db.create_all()
+        try:
+            inspector = inspect(db.engine)
+            exam_question_columns = {col["name"] for col in inspector.get_columns("exam_questions")}
+            if "section_instruction" not in exam_question_columns:
+                db.session.execute(
+                    text(
+                        "ALTER TABLE exam_questions "
+                        "ADD COLUMN section_instruction TEXT NULL AFTER question_text"
+                    )
+                )
+                db.session.commit()
+                print("Added missing exam_questions.section_instruction column.")
+        except Exception as exc:
+            db.session.rollback()
+            print(f"Warning: failed to ensure exam_questions.section_instruction column: {exc}")
     print("Database tables initialized (create_all).")
 
 

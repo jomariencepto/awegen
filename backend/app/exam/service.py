@@ -13,7 +13,7 @@ from app.auth.models import User
 from app.notifications.models import Notification
 from app.utils.logger import get_logger
 from datetime import datetime
-from sqlalchemy import and_, or_, func
+from sqlalchemy import and_, or_, func, inspect, text
 from marshmallow import ValidationError
 import threading
 
@@ -37,6 +37,42 @@ logger = get_logger(__name__)
 
 
 class ExamService:
+    @staticmethod
+    def _exam_questions_has_column(column_name):
+        """Return True when exam_questions has the given column in the live DB schema."""
+        try:
+            inspector = inspect(db.engine)
+            columns = {col['name'] for col in inspector.get_columns('exam_questions')}
+            return column_name in columns
+        except Exception as exc:
+            logger.warning(f"Failed to inspect exam_questions schema: {exc}")
+            return False
+
+    @staticmethod
+    def _ensure_exam_questions_section_instruction_column():
+        """
+        Backfill the exam_questions.section_instruction column for older databases.
+        create_all() does not add new columns, so we repair the schema lazily.
+        """
+        if ExamService._exam_questions_has_column('section_instruction'):
+            return True
+
+        try:
+            with db.engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE exam_questions "
+                        "ADD COLUMN section_instruction TEXT NULL AFTER question_text"
+                    )
+                )
+            logger.info("Added missing exam_questions.section_instruction column")
+            return True
+        except Exception as exc:
+            if ExamService._exam_questions_has_column('section_instruction'):
+                return True
+            logger.error(f"Failed to add exam_questions.section_instruction column: {exc}")
+            return False
+
     @staticmethod
     def _strip_legacy_section_instruction(text):
         """Remove old first-question instruction prefixes from display text."""
@@ -707,6 +743,16 @@ class ExamService:
                 if approver_id:
                     exam.reviewed_by = approver_id
                     exam.reviewed_at = datetime.utcnow()
+
+            if not ExamService._ensure_exam_questions_section_instruction_column():
+                db.session.rollback()
+                return {
+                    'success': False,
+                    'message': (
+                        'Database schema is outdated: exam_questions.section_instruction is missing '
+                        'and could not be created automatically.'
+                    )
+                }, 500
 
             # IMPORTANT: Save questions with ALL required fields
             for question_data in exam_result['questions']:
