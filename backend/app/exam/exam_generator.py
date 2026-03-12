@@ -1579,6 +1579,10 @@ class ExamGenerator:
 
     def _question_looks_copied_from_source(self, question_text, source_text):
         """Reject objective stems that are effectively copied from a module sentence."""
+        # Disabled by request: allow near-source stems to pass verification so
+        # objective questions are not dropped for copying the module wording.
+        return False
+
         q_norm = self._normalize_for_copy_check(self._sanitize_generated_text(question_text))
         if len(q_norm.split()) < 6:
             return False
