@@ -650,12 +650,24 @@ class ExamService:
             formatted_questions = []
             for q in exam_result['questions']:
                 image_id = q.get('_image_id')
+                normalized_options = q.get('options', [])
+                if isinstance(normalized_options, list):
+                    normalized_options = [
+                        ExamService._normalize_question_text_for_client(option)
+                        if isinstance(option, str) else option
+                        for option in normalized_options
+                    ]
                 formatted_questions.append({
-                    "question_text": q.get('question_text'),
+                    "question_text": ExamService._normalize_question_text_for_client(
+                        q.get('question_text'),
+                        strip_section_instruction=True,
+                    ),
                     "section_instruction": q.get('section_instruction'),
                     "question_type": q.get('question_type'),
-                    "options": q.get('options', []),
-                    "correct_answer": q.get('correct_answer'),
+                    "options": normalized_options,
+                    "correct_answer": ExamService._normalize_question_text_for_client(
+                        q.get('correct_answer')
+                    ),
                     "difficulty_level": q.get('difficulty_level'),
                     "bloom_level": q.get('bloom_level'),
                     "points": q.get('points'),

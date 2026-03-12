@@ -552,9 +552,11 @@
   font-size: 15px; font-weight: 500;
   color: var(--gray-700) !important;
   margin: 0 0 6px; line-height: 1.55;
+  font-style: normal;
+  font-family: inherit;
 }
 .question-text * { color: inherit !important; }
-.question-plain-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+.question-plain-text { font-size: 15px; line-height: 1.6; white-space: pre-wrap; font-style: normal; font-family: inherit; }
 
 .question-points {
   display: inline-block;

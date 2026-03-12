@@ -1430,7 +1430,7 @@ class ExamGenerator:
 
     def _question_looks_copied_from_source(self, question_text, source_text):
         """Reject objective stems that are effectively copied from a module sentence."""
-        q_norm = self._normalize_for_copy_check(question_text)
+        q_norm = self._normalize_for_copy_check(self._sanitize_generated_text(question_text))
         if len(q_norm.split()) < 6:
             return False
 
@@ -1443,13 +1443,13 @@ class ExamGenerator:
                 return True
 
             ratio = SequenceMatcher(None, q_norm, s_norm).ratio()
-            if ratio >= 0.93:
+            if ratio >= 0.96:
                 return True
 
             q_words = set(q_norm.split())
             s_words = set(s_norm.split())
             overlap = len(q_words & s_words) / max(min(len(q_words), len(s_words)), 1)
-            if overlap >= 0.90 and abs(len(q_words) - len(s_words)) <= 2:
+            if overlap >= 0.94 and abs(len(q_words) - len(s_words)) <= 2:
                 return True
 
         return False
@@ -5945,9 +5945,22 @@ class ExamGenerator:
                 verification_passed = True
                 warnings = []
 
-                q_text = question.get('question_text', '')
+                q_text = self._sanitize_generated_text(question.get('question_text', ''))
                 q_type = question.get('question_type', '')
                 correct_answer = question.get('correct_answer', '')
+                if isinstance(correct_answer, str):
+                    correct_answer = self._sanitize_generated_text(correct_answer)
+                    question['correct_answer'] = correct_answer
+
+                options = question.get('options', [])
+                if isinstance(options, list):
+                    options = [
+                        self._sanitize_generated_text(option) if isinstance(option, str) else option
+                        for option in options
+                    ]
+                    question['options'] = options
+
+                question['question_text'] = q_text
 
                 # Verification Check 1: Answer exists in source content
                 # problem_solving answers are full step-by-step solutions — skip
@@ -5970,6 +5983,10 @@ class ExamGenerator:
                 if len(q_text.strip()) < 10:
                     verification_passed = False
                     logger.warning(f"  WARN Q{idx+1}: Too short - '{q_text[:50]}...'")
+
+                if self._has_text_artifact(q_text):
+                    verification_passed = False
+                    logger.warning(f"  REJECT Q{idx+1}: Text artifact detected after sanitization")
 
                 # Reject spaced-letter artifacts and template-like stems
                 if re.search(r'(?:[A-Za-z]\\s){6,}', q_text):
@@ -6001,8 +6018,6 @@ class ExamGenerator:
 
                 # Verification Check 3: MCQ specific checks
                 if q_type == 'multiple_choice':
-                    options = question.get('options', [])
-
                     # Must have exactly 4 options: 1 correct answer + 3 distractors
                     if len(options) != 4:
                         verification_passed = False
@@ -6093,7 +6108,7 @@ class ExamGenerator:
         if not target_configs:
             return verified_questions, verification_stats
 
-        max_passes = 3
+        max_passes = 5
         for attempt in range(max_passes):
             deficits = []
             for qt_config in target_configs:
