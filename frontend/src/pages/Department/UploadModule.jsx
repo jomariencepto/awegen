@@ -104,10 +104,24 @@ function UploadModule() {
 
   const handleFileChange = (e) => {
     const file = e.target.files[0];
-    if (file) {
-      setSelectedFile(file);
-      setValue('file', file);
+    if (!file) return;
+
+    const allowedTypes = ['pdf', 'doc', 'docx'];
+    const maxSize = 16 * 1024 * 1024;
+    const ext = file.name.split('.').pop()?.toLowerCase();
+
+    if (!allowedTypes.includes(ext)) {
+      toast.error(`Invalid file type: ${file.name}`);
+      return;
     }
+
+    if (file.size > maxSize) {
+      toast.error(`File too large (max 16MB): ${file.name}`);
+      return;
+    }
+
+    setSelectedFile(file);
+    setValue('file', file);
   };
 
   const onSubmit = async (data) => {
@@ -148,7 +162,13 @@ function UploadModule() {
       
     } catch (error) {
       setUploadStatus('error');
-      const message = error.response?.data?.message || 'Failed to upload module';
+      const status = error.response?.status;
+      const message = (
+        error.response?.data?.message ||
+        (status === 413 ? 'File too large. Maximum upload size is 16 MB.' : null) ||
+        (status === 403 ? 'Your account does not have permission to upload modules.' : null) ||
+        'Failed to upload module'
+      );
       toast.error(message);
     } finally {
       setIsLoading(false);

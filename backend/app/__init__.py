@@ -12,6 +12,7 @@ from flask_jwt_extended import JWTManager
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from datetime import timedelta
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from app.database import init_db
 from app.config import config_by_name
@@ -198,6 +199,18 @@ def create_app(config_name=None):
     @app.errorhandler(404)
     def not_found(error):
         return jsonify({"success": False, "message": "Resource not found"}), 404
+
+    @app.errorhandler(413)
+    @app.errorhandler(RequestEntityTooLarge)
+    def request_too_large(error):
+        max_bytes = int(app.config.get("MAX_CONTENT_LENGTH") or 0)
+        max_mb = max_bytes / (1024 * 1024) if max_bytes else None
+        message = (
+            f"File too large. Maximum upload size is {max_mb:.0f} MB."
+            if max_mb else
+            "File too large."
+        )
+        return jsonify({"success": False, "message": message}), 413
 
     @app.errorhandler(500)
     def internal_error(error):

@@ -30,7 +30,8 @@ module_bp = Blueprint("modules", __name__)
 
 logger = get_logger(__name__)
 
-# Roles allowed to archive/unarchive modules
+# Roles allowed to upload/archive/unarchive modules
+UPLOAD_ALLOWED_ROLES = {'teacher', 'admin', 'department', 'department_head'}
 ARCHIVE_ALLOWED_ROLES = {'department_head', 'admin', 'department'}
 
 
@@ -54,7 +55,7 @@ def upload_module():
         if not user:
             return jsonify({"success": False, "message": "User not found"}), 404
 
-        if user.role.lower() not in ['teacher', 'admin']:
+        if user.role.lower() not in UPLOAD_ALLOWED_ROLES:
             return jsonify({"success": False, "message": "Insufficient permissions"}), 403
 
         if "file" not in request.files:
@@ -87,14 +88,14 @@ def upload_module():
                 "message": "subject_id is required"
             }), 400
 
-        teacher_id = user_id
+        owner_id = user_id
 
-        logger.info(f"Module upload: teacher={teacher_id}, subject={subject_id}, file={file.filename}")
+        logger.info(f"Module upload: uploader={owner_id}, subject={subject_id}, file={file.filename}")
 
         from app.module_processor.saved_module import SavedModuleService
         result, status_code = SavedModuleService.save_module(
             file=file,
-            teacher_id=teacher_id,
+            teacher_id=owner_id,
             subject_id=subject_id,
             teaching_hours=teaching_hours
         )
