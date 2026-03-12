@@ -51,12 +51,12 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       APP_LOGIN_URL: ${APP_LOGIN_URL:-http://localhost:3000/auth/login}
       PDF_DOWNLOAD_PASSWORD: ${PDF_DOWNLOAD_PASSWORD:-}
-      SMTP_SERVER: ${SMTP_SERVER:-}
-      SMTP_PORT: ${SMTP_PORT:-}
-      SMTP_USERNAME: ${thesisawegen@gmail.com-}
-      SMTP_PASSWORD: ${qvjm scns kdeb imjh:-}
-      FROM_EMAIL: ${thesisawegen@gmail.com:-}
-      FROM_NAME: ${FROM_NAME:-AWEGen System}
+      SMTP_SERVER: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USERNAME: thesisawegen@gmail.com
+      SMTP_PASSWORD: qvjm scns kdeb imjh
+      FROM_EMAIL: thesisawegen@gmail.com
+      FROM_NAME: FROM_NAME:-AWEGen System
     ports:
       - "${BACKEND_PORT:-5000}:5000"
     volumes:
