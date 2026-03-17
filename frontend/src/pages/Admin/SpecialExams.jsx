@@ -42,13 +42,14 @@ function SpecialExams() {
 
   const toggleSpecialStatus = async (examId, currentStatus) => {
     try {
-      await api.put(`/exams/${examId}/special`, {
+      const response = await api.put(`/exams/${examId}/special`, {
         is_special: !currentStatus
       });
-      
+
+      const updatedExam = response.data?.exam;
       setExams(exams.map(exam => 
         exam.exam_id === examId 
-          ? { ...exam, is_special: !currentStatus }
+          ? { ...exam, ...(updatedExam || {}), is_special: !currentStatus }
           : exam
       ));
     } catch (error) {
@@ -130,7 +131,7 @@ function SpecialExams() {
                   </p>
                   <p>
                     <span className="font-medium">Status:</span>{' '}
-                    <Badge variant="outline">{exam.status}</Badge>
+                    <Badge variant="outline">{exam.status || exam.admin_status || 'approved'}</Badge>
                   </p>
                 </div>
                 <div className="flex gap-2">

@@ -33,7 +33,7 @@ def mark_all_notifications_read():
 
 @approval_bp.route('/teacher-approvals', methods=['GET'])
 @jwt_required()
-@role_required(['admin', 'department'])
+@role_required(['admin', 'department', 'department_head'])
 def get_teacher_approvals():
     status = request.args.get('status')
     page = request.args.get('page', 1, type=int)
@@ -45,7 +45,7 @@ def get_teacher_approvals():
 
 @approval_bp.route('/teacher-approvals/<int:approval_id>', methods=['PUT'])
 @jwt_required()
-@role_required(['admin', 'department'])
+@role_required(['admin', 'department', 'department_head'])
 def update_teacher_approval(approval_id):
     data = request.get_json()
     approver_id = get_jwt_identity()
@@ -57,13 +57,14 @@ def update_teacher_approval(approval_id):
 @approval_bp.route('/user/<int:user_id>/approvals', methods=['GET'])
 @jwt_required()
 def get_user_approvals(user_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
     
     # Users can only view their own approvals unless they're admin
     from app.auth.models import User
     current_user = User.query.get(current_user_id)
     
-    if current_user_id != user_id and current_user.role.role_name != 'admin':
+    current_role = (current_user.role or '').lower() if current_user else ''
+    if current_user_id != user_id and current_role != 'admin':
         return jsonify({'success': False, 'message': 'Unauthorized'}), 403
     
     status = request.args.get('status')

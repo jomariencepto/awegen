@@ -327,7 +327,7 @@ def submit_exam_for_approval(exam_id):
     URL: POST /api/exams/{exam_id}/submit
     """
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         teacher_id = int(get_jwt_identity())  # ⭐ Convert to int
         
         logger.info(f"📤 Submit exam request: exam_id={exam_id}, teacher_id={teacher_id}")
@@ -368,6 +368,84 @@ def submit_exam_for_approval(exam_id):
         return jsonify({
             'success': False, 
             'message': f'Failed to submit exam: {str(e)}'
+        }), 500
+
+
+@exam_bp.route('/submit-for-approval', methods=['POST'])
+@jwt_required()
+@role_required(['teacher'])
+def submit_exam_for_approval_legacy():
+    """Backward-compatible alias for older SavedExams clients."""
+    try:
+        data = request.get_json() or {}
+        exam_id = data.get('exam_id')
+        requester_id = int(get_jwt_identity())
+
+        if not exam_id:
+            return jsonify({
+                'success': False,
+                'message': 'exam_id is required'
+            }), 400
+
+        exam = Exam.query.get(exam_id)
+        if not exam:
+            return jsonify({
+                'success': False,
+                'message': 'Exam not found'
+            }), 404
+
+        if exam.teacher_id != requester_id:
+            return jsonify({
+                'success': False,
+                'message': 'Unauthorized - You do not own this exam'
+            }), 403
+
+        result, status_code = ExamService.submit_exam_for_approval(data)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error in legacy submit exam route: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': f'Failed to submit exam: {str(e)}'
+        }), 500
+
+
+@exam_bp.route('/special', methods=['GET'])
+@jwt_required()
+@role_required(['admin', 'department', 'department_head'])
+def get_special_exams():
+    """Get approved exams with special flags for admin and department users."""
+    try:
+        user_id = int(get_jwt_identity())
+        result, status_code = ExamService.get_special_exams(user_id)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in get_special_exams: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Failed to get special exams'
+        }), 500
+
+
+@exam_bp.route('/<int:exam_id>/special', methods=['PUT'])
+@jwt_required()
+@role_required(['admin', 'department', 'department_head'])
+def update_special_exam_status(exam_id):
+    """Mark or unmark an approved exam as special."""
+    try:
+        data = request.get_json() or {}
+        user_id = int(get_jwt_identity())
+        raw_is_special = data.get('is_special')
+        is_special = raw_is_special if isinstance(raw_is_special, bool) else str(raw_is_special).lower() in ('1', 'true', 'yes', 'on')
+
+        result, status_code = ExamService.update_special_exam_status(exam_id, user_id, is_special)
+        return jsonify(result), status_code
+    except Exception as e:
+        logger.error(f"Error in update_special_exam_status: {str(e)}")
+        return jsonify({
+            'success': False,
+            'message': 'Failed to update special exam status'
         }), 500
 
 

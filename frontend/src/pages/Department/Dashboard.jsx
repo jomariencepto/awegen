@@ -23,6 +23,8 @@ function DepartmentDashboard() {
   const [error, setError] = useState(null);
 
   const userRole = getUserRole(currentUser);
+  const resolvedDepartmentName = String(currentUser?.department_name || '').trim();
+  const departmentDisplayName = resolvedDepartmentName || 'Not Assigned';
 
   useEffect(() => {
     if (currentUser && !hasFetched.current) {
@@ -117,8 +119,18 @@ function DepartmentDashboard() {
           Welcome back, {currentUser?.first_name} {currentUser?.last_name}
         </p>
 
+        <div className="mt-3 inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-sm font-medium text-amber-900">
+          Current Department: {departmentDisplayName}
+        </div>
+
         <div className="mt-2 space-y-1 text-sm text-muted-foreground">
           <p>Role: {userRole === 'department_head' ? 'Department Head' : userRole}</p>
+          <p>
+            Department:{' '}
+            {resolvedDepartmentName || (
+              <span className="text-red-600 font-semibold">Not Assigned</span>
+            )}
+          </p>
           <p>
             Department ID:{' '}
             {currentUser?.department_id || (

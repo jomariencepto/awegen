@@ -1,7 +1,7 @@
 import json
 import re
 from app.database import db
-from app.exam.models import Exam, ExamQuestion, ExamCategory, ExamSubmission, ExamAnswer, ExamModule
+from app.exam.models import Exam, ExamQuestion, ExamCategory, ExamSubmission, ExamAnswer, ExamModule, SpecialExam
 from app.exam.schemas import (
     ExamSchema, ExamCreateSchema, ExamUpdateSchema, ExamSubmitSchema, 
     ExamApproveSchema, ExamSendToDepartmentSchema, QuestionCreateSchema, 
@@ -72,6 +72,40 @@ class ExamService:
                 return True
             logger.error(f"Failed to add exam_questions.section_instruction column: {exc}")
             return False
+
+    @staticmethod
+    def _ensure_special_exams_table():
+        """Create the additive special_exams table lazily for older databases."""
+        try:
+            SpecialExam.__table__.create(bind=db.engine, checkfirst=True)
+            return True
+        except Exception as exc:
+            logger.error(f"Failed to ensure special_exams table exists: {exc}")
+            return False
+
+    @staticmethod
+    def _serialize_exam_with_special_state(exam, special_exam_ids=None):
+        """Return a stable exam payload with special-exam flags expected by the UI."""
+        exam_dict = exam.to_dict()
+        exam_dict['is_special'] = exam.exam_id in (special_exam_ids or set())
+        exam_dict['status'] = exam_dict.get('admin_status')
+        return exam_dict
+
+    @staticmethod
+    def _is_exam_visible_to_department_user(exam, current_user):
+        """Check whether a department-scoped user can manage the given exam."""
+        if not exam or not current_user or not current_user.department_id:
+            return False
+
+        if exam.department_id == current_user.department_id:
+            return True
+
+        creator = exam.teacher
+        return (
+            exam.department_id is None
+            and creator is not None
+            and creator.department_id == current_user.department_id
+        )
 
     @staticmethod
     def _strip_legacy_section_instruction(text):
@@ -574,6 +608,127 @@ class ExamService:
         except Exception as e:
             logger.error(f"Error getting all exams: {str(e)}")
             return {'success': False, 'message': 'Failed to get exams'}, 500
+
+    @staticmethod
+    def get_special_exams(user_id):
+        """List approved exams with their special flag for admin or department users."""
+        try:
+            if not ExamService._ensure_special_exams_table():
+                return {'success': False, 'message': 'Failed to prepare special exams feature'}, 500
+
+            current_user = User.query.get(user_id)
+            if not current_user:
+                return {'success': False, 'message': 'User not found'}, 404
+
+            current_role = (current_user.role or '').lower()
+            if current_role not in ('admin', 'department', 'department_head'):
+                return {'success': False, 'message': 'Unauthorized'}, 403
+
+            if current_role == 'admin':
+                exams = (
+                    Exam.query
+                    .filter(Exam.admin_status == 'approved')
+                    .order_by(Exam.created_at.desc(), Exam.exam_id.desc())
+                    .all()
+                )
+            else:
+                if not current_user.department_id:
+                    return {
+                        'success': False,
+                        'message': 'User is not assigned to a department'
+                    }, 400
+
+                exams = (
+                    Exam.query
+                    .outerjoin(User, Exam.teacher_id == User.user_id)
+                    .filter(Exam.admin_status == 'approved')
+                    .filter(
+                        or_(
+                            Exam.department_id == current_user.department_id,
+                            and_(
+                                Exam.department_id.is_(None),
+                                User.department_id == current_user.department_id
+                            )
+                        )
+                    )
+                    .order_by(Exam.created_at.desc(), Exam.exam_id.desc())
+                    .all()
+                )
+
+            exam_ids = [exam.exam_id for exam in exams]
+            special_exam_ids = set()
+            if exam_ids:
+                special_exam_ids = {
+                    exam_id for (exam_id,) in db.session.query(SpecialExam.exam_id).filter(
+                        SpecialExam.exam_id.in_(exam_ids)
+                    ).all()
+                }
+
+            exams_data = [
+                ExamService._serialize_exam_with_special_state(exam, special_exam_ids)
+                for exam in exams
+            ]
+            exams_data.sort(key=lambda exam: 0 if exam.get('is_special') else 1)
+
+            return {
+                'success': True,
+                'exams': exams_data
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting special exams: {str(e)}")
+            return {'success': False, 'message': 'Failed to get special exams'}, 500
+
+    @staticmethod
+    def update_special_exam_status(exam_id, user_id, is_special):
+        """Mark or unmark an approved exam as special."""
+        try:
+            if not ExamService._ensure_special_exams_table():
+                return {'success': False, 'message': 'Failed to prepare special exams feature'}, 500
+
+            current_user = User.query.get(user_id)
+            if not current_user:
+                return {'success': False, 'message': 'User not found'}, 404
+
+            current_role = (current_user.role or '').lower()
+            if current_role not in ('admin', 'department', 'department_head'):
+                return {'success': False, 'message': 'Unauthorized'}, 403
+
+            exam = Exam.query.get(exam_id)
+            if not exam:
+                return {'success': False, 'message': 'Exam not found'}, 404
+
+            if exam.admin_status != 'approved':
+                return {'success': False, 'message': 'Only approved exams can be marked as special'}, 400
+
+            if current_role != 'admin' and not ExamService._is_exam_visible_to_department_user(exam, current_user):
+                return {'success': False, 'message': 'Unauthorized to manage this exam'}, 403
+
+            special_entry = SpecialExam.query.filter_by(exam_id=exam_id).first()
+            if is_special:
+                if not special_entry:
+                    db.session.add(SpecialExam(exam_id=exam_id, marked_by=user_id))
+                    message = 'Exam marked as special'
+                else:
+                    message = 'Exam is already marked as special'
+            else:
+                if special_entry:
+                    db.session.delete(special_entry)
+                message = 'Exam removed from special exams'
+
+            db.session.commit()
+
+            special_exam_ids = {exam_id} if is_special else set()
+            return {
+                'success': True,
+                'message': message,
+                'exam': ExamService._serialize_exam_with_special_state(exam, special_exam_ids)
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error updating special exam status: {str(e)}")
+            db.session.rollback()
+            return {'success': False, 'message': 'Failed to update special exam status'}, 500
 
     @staticmethod
     def create_exam(exam_data, teacher_id, auto_approve=False, approver_id=None, department_id=None):

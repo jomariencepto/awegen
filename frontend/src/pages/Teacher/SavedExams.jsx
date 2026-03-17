@@ -152,7 +152,7 @@ function SavedExams() {
     }
 
     try {
-      await api.post('/exams/submit-for-approval', {
+      await api.post(`/exams/${examId}/submit`, {
         exam_id: examId,
         department_id: departmentId,
         instructor_notes: 'Submitted for approval'

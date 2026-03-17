@@ -5,6 +5,7 @@ from app.notifications.models import Notification
 from app.database import db
 
 notifications_bp = Blueprint('notifications', __name__)
+DEPARTMENT_NOTIFICATION_ROLES = {'admin', 'department', 'department_head'}
 
 
 def _jwt_user_id_as_int():
@@ -65,7 +66,8 @@ def get_teacher_notifications(teacher_id):
         if str(current_user_id) != str(teacher_id):
             from app.auth.models import User
             current_user = User.query.get(current_user_id)
-            if not current_user or current_user.role not in ['admin', 'department']:
+            current_role = (current_user.role or '').lower() if current_user else ''
+            if current_role not in DEPARTMENT_NOTIFICATION_ROLES:
                 return jsonify({
                     'success': False,
                     'message': 'Unauthorized to view these notifications'
@@ -167,7 +169,8 @@ def get_teacher_unread_count(teacher_id):
         if str(current_user_id) != str(teacher_id):
             from app.auth.models import User
             current_user = User.query.get(current_user_id)
-            if not current_user or current_user.role not in ['admin', 'department']:
+            current_role = (current_user.role or '').lower() if current_user else ''
+            if current_role not in DEPARTMENT_NOTIFICATION_ROLES:
                 return jsonify({
                     'success': False,
                     'message': 'Unauthorized to view this information'

@@ -11,7 +11,7 @@ users_bp = Blueprint('users', __name__)
 
 @users_bp.route('/', methods=['GET'])
 @jwt_required()
-@role_required(['admin', 'department'])
+@role_required(['admin', 'department', 'department_head'])
 def get_all_users():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 10, type=int)
@@ -23,12 +23,13 @@ def get_all_users():
 @users_bp.route('/<int:user_id>', methods=['GET'])
 @jwt_required()
 def get_user(user_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
 
     from app.auth.models import User
     current_user = User.query.get(current_user_id)
 
-    if current_user_id != user_id and current_user.role not in ['admin', 'department']:
+    current_role = (current_user.role or '').lower() if current_user else ''
+    if current_user_id != user_id and current_role not in ['admin', 'department', 'department_head']:
         return jsonify({'success': False, 'message': 'Unauthorized'}), 403
 
     result, status_code = UserService.get_user_by_id(user_id)
@@ -38,13 +39,14 @@ def get_user(user_id):
 @users_bp.route('/<int:user_id>', methods=['PUT'])
 @jwt_required()
 def update_user(user_id):
-    current_user_id = get_jwt_identity()
+    current_user_id = int(get_jwt_identity())
 
     from app.auth.models import User
     current_user = User.query.get(current_user_id)
 
     # Allow admins and department roles to update other users
-    if current_user_id != user_id and current_user.role not in ['admin', 'department']:
+    current_role = (current_user.role or '').lower() if current_user else ''
+    if current_user_id != user_id and current_role not in ['admin', 'department', 'department_head']:
         return jsonify({'success': False, 'message': 'Unauthorized'}), 403
 
     data = request.get_json()
@@ -54,7 +56,7 @@ def update_user(user_id):
 
 @users_bp.route('/approve', methods=['POST'])
 @jwt_required()
-@role_required(['admin', 'department'])
+@role_required(['admin', 'department', 'department_head'])
 def approve_user():
     data = request.get_json()
     result, status_code = UserService.approve_user(data)

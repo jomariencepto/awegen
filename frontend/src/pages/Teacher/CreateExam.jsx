@@ -44,9 +44,83 @@ import {
   toCoveragePercent,
 } from '../../utils/moduleCoverage';
 
+const ACTIVE_MODULE_STATUSES = new Set(['pending', 'processing']);
+const DEFAULT_QUESTION_TYPES_DETAILS = [
+  { type: 'multiple_choice', difficulty: 'lots', points: 1, count: 5, description: '' }
+];
+const MODULE_STATUS_POLL_INTERVAL_MS = 3000;
+
 const toTitleCase = (value) => {
   if (typeof value !== 'string') return '';
   return value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+const normalizeModuleStatus = (status) => {
+  const normalized = String(status || 'pending').trim().toLowerCase();
+  return ['pending', 'processing', 'completed', 'failed'].includes(normalized)
+    ? normalized
+    : 'pending';
+};
+
+const mergeSelectedModulesWithLatest = (latestModules, selectedSnapshot = []) => {
+  const latestById = new Map(
+    (latestModules || []).map((module) => [Number(module.module_id), module])
+  );
+
+  return (selectedSnapshot || [])
+    .map((selectedModule) => {
+      const moduleId = Number(selectedModule?.module_id);
+      const latestModule = latestById.get(moduleId);
+      if (!latestModule) return null;
+
+      return {
+        ...latestModule,
+        teachingHours: clampTeachingHours(selectedModule?.teachingHours),
+      };
+    })
+    .filter(Boolean);
+};
+
+const getModuleStatusMeta = (module) => {
+  const status = normalizeModuleStatus(module?.processing_status);
+
+  if (status === 'completed') {
+    if ((module?.question_count ?? 0) > 0) {
+      return {
+        status,
+        shortLabel: `${module.question_count} questions`,
+        detailLabel: 'Ready to use',
+      };
+    }
+
+    return {
+      status,
+      shortLabel: 'Ready',
+      detailLabel: 'Completed with no generated questions yet',
+    };
+  }
+
+  if (status === 'failed') {
+    return {
+      status,
+      shortLabel: 'Failed',
+      detailLabel: 'Processing failed. Re-upload this module if needed.',
+    };
+  }
+
+  if (status === 'processing') {
+    return {
+      status,
+      shortLabel: 'Processing...',
+      detailLabel: 'Module processing is still in progress.',
+    };
+  }
+
+  return {
+    status,
+    shortLabel: 'Pending...',
+    detailLabel: 'Upload finished. Waiting for processing to start.',
+  };
 };
 
   const EXAM_ERROR_FIELD_LABELS = {
@@ -106,9 +180,7 @@ function CreateExam({ mode = 'teacher' }) {
   const [currentTotalPoints, setCurrentTotalPoints] = useState(0);
   const [limitErrors, setLimitErrors] = useState({ pointsExceeds: false, timeExceeds: false });
 
-  const [questionTypesDetails, setQuestionTypesDetails] = useState([
-    { type: 'multiple_choice', difficulty: 'lots', points: 1, count: 5, description: '' }
-  ]);
+  const [questionTypesDetails, setQuestionTypesDetails] = useState(DEFAULT_QUESTION_TYPES_DETAILS);
 
   const [showUploadSection, setShowUploadSection] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState([]);
@@ -124,6 +196,12 @@ function CreateExam({ mode = 'teacher' }) {
     isLoading &&
     uploadStatus !== 'uploading' &&
     currentQuestionCount >= HEAVY_GENERATION_QUESTION_THRESHOLD;
+  const selectedModulesRef = useRef([]);
+  const pendingSelectedModulesRef = useRef([]);
+  const [selectedModulesReady, setSelectedModulesReady] = useState(false);
+  const selectedModulesDraftKey = currentUser?.user_id
+    ? `create-exam-selected-modules:${isDepartmentMode ? 'department' : 'teacher'}:${currentUser.user_id}`
+    : null;
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm();
   const formatSubjectLabel = (subject) => subject?.subject_name || 'Unnamed Subject';
@@ -219,8 +297,89 @@ function CreateExam({ mode = 'teacher' }) {
     });
   }, [questionTypesDetails, targetScoreLimit, totalDurationMin, setValue]);
 
+  useEffect(() => {
+    selectedModulesRef.current = selectedModules;
+  }, [selectedModules]);
+
+  useEffect(() => {
+    setSelectedModulesReady(false);
+
+    if (!selectedModulesDraftKey) {
+      pendingSelectedModulesRef.current = [];
+      selectedModulesRef.current = [];
+      setSelectedModules([]);
+      return;
+    }
+
+    try {
+      const rawDraft = sessionStorage.getItem(selectedModulesDraftKey);
+      const parsedDraft = rawDraft ? JSON.parse(rawDraft) : [];
+      pendingSelectedModulesRef.current = Array.isArray(parsedDraft)
+        ? parsedDraft
+            .map((module) => ({
+              module_id: Number(module?.module_id),
+              teachingHours: clampTeachingHours(module?.teachingHours),
+            }))
+            .filter((module) => Number.isFinite(module.module_id))
+        : [];
+    } catch (error) {
+      console.error('Failed to restore selected modules draft:', error);
+      pendingSelectedModulesRef.current = [];
+    }
+
+    selectedModulesRef.current = [];
+    setSelectedModules([]);
+  }, [selectedModulesDraftKey]);
+
+  useEffect(() => {
+    if (!selectedModulesDraftKey || !selectedModulesReady) return;
+
+    try {
+      const draftPayload = selectedModules.map((module) => ({
+        module_id: Number(module.module_id),
+        teachingHours: clampTeachingHours(module.teachingHours),
+      }));
+      sessionStorage.setItem(selectedModulesDraftKey, JSON.stringify(draftPayload));
+    } catch (error) {
+      console.error('Failed to persist selected modules draft:', error);
+    }
+  }, [selectedModulesDraftKey, selectedModules, selectedModulesReady]);
+
+  const syncModulesState = (serverModules, moduleIdsToSelect = []) => {
+    const selectionBase = selectedModulesRef.current.length > 0
+      ? selectedModulesRef.current
+      : pendingSelectedModulesRef.current;
+    const modulesToAutoSelect = moduleIdsToSelect
+      .map((moduleId) => ({ module_id: Number(moduleId), teachingHours: 0 }))
+      .filter((module) => Number.isFinite(module.module_id));
+    const mergedSelection = mergeSelectedModulesWithLatest(serverModules, [
+      ...selectionBase,
+      ...modulesToAutoSelect,
+    ]);
+
+    pendingSelectedModulesRef.current = [];
+    setModules(serverModules);
+    setSelectedModules(mergedSelection);
+    setSelectedModulesReady(true);
+    return mergedSelection;
+  };
+
+  const fetchModulesList = async (moduleIdsToSelect = []) => {
+    if (!currentUser?.user_id) return [];
+
+    const endpoint = isDepartmentMode
+      ? '/departments/modules'
+      : `/modules/teacher/${currentUser.user_id}`;
+    const response = await api.get(endpoint);
+    const serverModules = response.data.modules || [];
+    syncModulesState(serverModules, moduleIdsToSelect);
+    return serverModules;
+  };
+
   // Fetch data
   useEffect(() => {
+    let active = true;
+
     const fetchData = async () => {
       if (!currentUser) return;
       try {
@@ -237,16 +396,38 @@ function CreateExam({ mode = 'teacher' }) {
           api.get('/departments'),
         ]);
 
-        setModules(modulesRes.data.modules || []);
+        if (!active) return;
+
+        syncModulesState(modulesRes.data.modules || []);
         setCategories(categoriesRes.data.categories || []);
         setSubjects(subjectsRes.data.subjects || []);
         setDepartments(departmentsRes.data.departments || []);
       } catch {
+        if (!active) return;
         toast.error('Failed to load data');
       }
     };
     fetchData();
+    return () => { active = false; };
   }, [currentUser, isDepartmentMode]);
+
+  useEffect(() => {
+    if (!currentUser?.user_id) return undefined;
+
+    const hasProcessingModules = [...modules, ...selectedModules].some((module) =>
+      ACTIVE_MODULE_STATUSES.has(normalizeModuleStatus(module?.processing_status))
+    );
+
+    if (!hasProcessingModules) return undefined;
+
+    const timer = setInterval(() => {
+      fetchModulesList().catch((error) => {
+        console.error('Failed to refresh module statuses:', error);
+      });
+    }, MODULE_STATUS_POLL_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [currentUser?.user_id, isDepartmentMode, modules, selectedModules]);
 
   // API status
   useEffect(() => {
@@ -341,30 +522,20 @@ function CreateExam({ mode = 'teacher' }) {
     if (!selectedSubject)      { toast.error('Please select a subject'); return; }
     setIsLoading(true); setUploadStatus('uploading'); setUploadProgress(1);
     try {
-      const uploaded = [];
+      const uploadedModuleIds = [];
       for (let i = 0; i < selectedFiles.length; i++) {
         setCurrentFileIndex(i); setUploadProgress(0);
         try {
           const res = await uploadSingleFile(selectedFiles[i], selectedSubject);
-          const selectedSubjectData = subjectsById.get(Number(selectedSubject));
-          uploaded.push({
-            module_id: res.data.module_id,
-            title: res.data.title,
-            subject_id: selectedSubject,
-            subject_name: selectedSubjectData?.subject_name || null,
-            department_name: selectedSubjectData?.department_name || null,
-            processing_status: res.data.processing_status || 'pending',
-            question_count: res.data.question_count ?? 0,
-            teachingHours: 0,
-          });
+          uploadedModuleIds.push(Number(res.data.module_id));
           toast.success(`✓ ${selectedFiles[i].name} uploaded`);
         } catch { toast.error(`✗ ${selectedFiles[i].name} failed`); }
       }
-      if (uploaded.length) {
-        setModules(prev => [...prev, ...uploaded]);
-        setSelectedModules(prev => [...prev, ...uploaded]);
+
+      if (uploadedModuleIds.length) {
+        await fetchModulesList(uploadedModuleIds);
         setUploadStatus('success');
-        toast.success(`${uploaded.length} module(s) uploaded`);
+        toast.success(`${uploadedModuleIds.length} module(s) uploaded`);
         setSelectedFiles([]); setSelectedSubject(null); setShowUploadSection(false);
       } else { setUploadStatus('error'); toast.error('All uploads failed'); }
     } catch { setUploadStatus('error'); toast.error('Upload failed'); }
@@ -417,6 +588,10 @@ function CreateExam({ mode = 'teacher' }) {
     if (selectedModules.length === 0){ toast.error('Please select at least one module');   return; }
     if (selectedModules.some(m => (Number(m.teachingHours) || 0) <= 0)) {
       toast.error(`Please set teaching hours for all selected modules (${TERM_COVERAGE_HINT})`); return;
+    }
+    if (selectedModules.some((module) => normalizeModuleStatus(module.processing_status) !== 'completed')) {
+      toast.error('Wait for selected modules to finish processing, or remove the ones that failed.');
+      return;
     }
     const totalQuestions = questionTypesDetails.reduce((s, c) => s + c.count, 0);
     const totalPoints    = questionTypesDetails.reduce((s, c) => s + (c.count * c.points), 0);
@@ -517,6 +692,9 @@ function CreateExam({ mode = 'teacher' }) {
     if (!generatedExam) return;
     try {
       await api.post(`/exams/${generatedExam.exam_id}/save`, {});
+      if (selectedModulesDraftKey) {
+        sessionStorage.removeItem(selectedModulesDraftKey);
+      }
       const successMsg = isDepartmentMode
         ? 'Exam saved. You can now edit questions before approving.'
         : 'Exam saved successfully!';
@@ -785,12 +963,7 @@ function CreateExam({ mode = 'teacher' }) {
                           <SelectLabel className="bg-yellow-50 text-yellow-800 rounded-sm">{departmentName}</SelectLabel>
                           {mods.map((m) => (
                             <SelectItem key={m.module_id} value={String(m.module_id)}>
-                              {m.resolved_subject_name} - {m.title}
-                              {m.processing_status === 'completed' && (m.question_count ?? 0) > 0
-                                ? ` — ${m.question_count} questions`
-                                : m.processing_status === 'completed'
-                                  ? ' — no questions'
-                                  : ' — processing…'}
+                              {m.resolved_subject_name} - {m.title} — {getModuleStatusMeta(m).shortLabel}
                             </SelectItem>
                           ))}
                         </SelectGroup>
@@ -806,7 +979,9 @@ function CreateExam({ mode = 'teacher' }) {
                 <div className="selected-modules">
                   <Label>{`Selected Modules & Teaching Hours (${TERM_COVERAGE_HINT})`}</Label>
                   <div className="modules-list">
-                    {selectedModules.map((module) => (
+                    {selectedModules.map((module) => {
+                      const moduleStatus = getModuleStatusMeta(module);
+                      return (
                       <div key={module.module_id} className="module-item">
                         <div className="module-title">
                           <p>
@@ -817,9 +992,9 @@ function CreateExam({ mode = 'teacher' }) {
                               </span>
                             )}
                           </p>
-                          {module.processing_status !== 'completed' && (
+                          {moduleStatus.status !== 'completed' && (
                             <span style={{ fontSize:11, color:'#9CA3AF', marginTop:2, display:'block' }}>
-                              Still processing…
+                              {moduleStatus.detailLabel}
                             </span>
                           )}
                         </div>
@@ -842,7 +1017,8 @@ function CreateExam({ mode = 'teacher' }) {
                           <X className="remove-icon-small" />
                         </Button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
 
                   <div className="hours-summary">

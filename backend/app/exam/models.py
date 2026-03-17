@@ -109,6 +109,43 @@ class Exam(db.Model):
         }
 
 
+class SpecialExam(db.Model):
+    __tablename__ = 'special_exams'
+    __table_args__ = (
+        db.Index('ix_special_exams_exam_id', 'exam_id'),
+        db.Index('ix_special_exams_marked_by', 'marked_by'),
+        {'extend_existing': True},
+    )
+
+    special_exam_id = db.Column(db.Integer, primary_key=True)
+    exam_id = db.Column(
+        db.Integer,
+        db.ForeignKey('exams.exam_id', ondelete='CASCADE'),
+        nullable=False,
+        unique=True,
+    )
+    marked_by = db.Column(
+        db.Integer,
+        db.ForeignKey('users.user_id', ondelete='SET NULL'),
+        nullable=True,
+    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    exam = db.relationship(
+        'Exam',
+        backref=db.backref('special_entry', uselist=False, passive_deletes=True),
+    )
+    marker = db.relationship('User', backref='special_exams_marked')
+
+    def to_dict(self):
+        return {
+            'special_exam_id': self.special_exam_id,
+            'exam_id': self.exam_id,
+            'marked_by': self.marked_by,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class ExamQuestion(db.Model):
     __tablename__ = 'exam_questions'
     __table_args__ = (
