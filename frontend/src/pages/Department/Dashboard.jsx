@@ -6,6 +6,10 @@ import { Button } from '../../components/ui/button';
 import { AlertCircle, Bell, FileCheck, FileText, UserCheck, Users } from 'lucide-react';
 import api, { getUserRole } from '../../utils/api';
 
+const isDepartmentCreatedPendingExam = (exam) => (
+  String(exam?.admin_status || '').toLowerCase() === 'pending' && !exam?.submitted_to_admin
+);
+
 function DepartmentDashboard() {
   const { currentUser } = useAuth();
   const hasFetched = useRef(false);
@@ -267,11 +271,19 @@ function DepartmentDashboard() {
                   <div>
                     <p className="font-medium">{exam.title}</p>
                     <p className="text-sm text-muted-foreground">
-                      Teacher: {exam.teacher_name || exam.teacher_id}
+                      {isDepartmentCreatedPendingExam(exam) ? 'Created By' : 'Teacher'}: {exam.teacher_name || exam.teacher_id}
                     </p>
                   </div>
                   <Button size="sm" asChild>
-                    <Link to={`/department/exam-review/${exam.exam_id}`}>Review</Link>
+                    <Link
+                      to={
+                        isDepartmentCreatedPendingExam(exam)
+                          ? `/department/review-questions/${exam.exam_id}`
+                          : `/department/exam-review/${exam.exam_id}`
+                      }
+                    >
+                      {isDepartmentCreatedPendingExam(exam) ? 'Edit Questions' : 'Review'}
+                    </Link>
                   </Button>
                 </div>
               ))}

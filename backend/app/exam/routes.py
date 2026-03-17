@@ -6,10 +6,11 @@ from app.exam.service import ExamService
 from app.exam.models import Exam, ExamQuestion
 from app.utils.decorators import role_required
 from app.auth.models import User
+from app.utils.exam_password import get_exam_download_password
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
-PDF_DOWNLOAD_PASSWORD = os.getenv("PDF_DOWNLOAD_PASSWORD", "PDMEXAM@123")
+DOCX_ENCRYPTED_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 exam_bp = Blueprint("exams", __name__)
 
@@ -34,7 +35,8 @@ def _get_dominant_difficulty(topic, questions_data):
 
 def _encrypt_pdf_buffer_if_needed(buffer):
     """Encrypt an in-memory PDF buffer using the shared password."""
-    if not PDF_DOWNLOAD_PASSWORD:
+    pdf_download_password = get_exam_download_password()
+    if not pdf_download_password:
         buffer.seek(0)
         return buffer
     try:
@@ -43,7 +45,7 @@ def _encrypt_pdf_buffer_if_needed(buffer):
         writer = PdfWriter()
         for page in reader.pages:
             writer.add_page(page)
-        writer.encrypt(PDF_DOWNLOAD_PASSWORD)
+        writer.encrypt(pdf_download_password)
         out = io.BytesIO()
         writer.write(out)
         out.seek(0)
@@ -52,6 +54,33 @@ def _encrypt_pdf_buffer_if_needed(buffer):
         logger.warning(f"PDF encryption skipped: {e}")
         buffer.seek(0)
         return buffer
+
+
+def _protect_docx_buffer_if_needed(buffer):
+    """Protect an in-memory DOCX buffer using the shared password."""
+    doc_password = get_exam_download_password()
+    if not doc_password:
+        buffer.seek(0)
+        return buffer
+
+    try:
+        from msoffcrypto.format.ooxml import OOXMLFile
+
+        buffer.seek(0)
+        protected = io.BytesIO()
+        OOXMLFile(buffer).encrypt(doc_password, protected)
+        protected.seek(0)
+
+        if protected.read(len(DOCX_ENCRYPTED_MAGIC)) != DOCX_ENCRYPTED_MAGIC:
+            raise RuntimeError("DOCX encryption did not produce a password-protected Office file.")
+
+        protected.seek(0)
+        return protected
+    except Exception as e:
+        logger.error(f"DOCX protection failed: {e}", exc_info=True)
+        raise RuntimeError(
+            "DOCX password protection is enabled, but the exported DOCX could not be encrypted."
+        ) from e
 
 
 # =========================
@@ -1638,7 +1667,7 @@ def export_answer_key_word(exam_id):
         # Save to buffer
         buffer = io.BytesIO()
         doc.save(buffer)
-        buffer.seek(0)
+        buffer = _protect_docx_buffer_if_needed(buffer)
         
         # Send file
         return send_file(

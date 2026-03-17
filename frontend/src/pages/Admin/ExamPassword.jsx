@@ -93,7 +93,7 @@ function ExamPassword() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Exam Password</h1>
         <p className="text-muted-foreground">
-          Change the password used when exporting encrypted exam PDFs.
+          Change the password used when exporting protected exam PDF and DOCX files.
         </p>
       </div>
 
@@ -118,7 +118,7 @@ function ExamPassword() {
         <CardHeader>
           <CardTitle>Current Status</CardTitle>
           <CardDescription>
-            This password is used to encrypt downloaded exam PDF files.
+            This password is used to protect downloaded exam PDF and DOCX files.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">

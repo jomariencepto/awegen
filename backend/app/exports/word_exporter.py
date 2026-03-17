@@ -1,12 +1,135 @@
 import os
 import json
+import uuid
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from flask import current_app, has_app_context
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+_PASSTHROUGH_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.jfif'}
+
+
+def _get_backend_root():
+    if has_app_context():
+        return os.path.dirname(current_app.root_path)
+    return str(Path(__file__).resolve().parents[2])
+
+
+def _get_app_root():
+    if has_app_context():
+        return current_app.root_path
+    return os.path.join(_get_backend_root(), 'app')
+
+
+def _get_export_image_temp_path(image_id, suffix='.png'):
+    temp_dir = os.path.join(_get_backend_root(), 'temp', 'export_images')
+    os.makedirs(temp_dir, exist_ok=True)
+    return os.path.join(temp_dir, f"question_image_{image_id}_{uuid.uuid4().hex}{suffix}")
+
+
+def _resolve_module_image_source_path(module_image):
+    backend_dir = _get_backend_root()
+    app_root = _get_app_root()
+    candidates = []
+
+    if module_image.image_path:
+        candidates.append(module_image.image_path)
+
+        if not os.path.isabs(module_image.image_path):
+            candidates.append(os.path.join(backend_dir, module_image.image_path))
+            candidates.append(os.path.join(app_root, module_image.image_path))
+
+        if f"{os.sep}app{os.sep}" in module_image.image_path:
+            stripped = module_image.image_path.replace(f"{os.sep}app{os.sep}", os.sep)
+            candidates.append(stripped)
+            candidates.append(os.path.join(backend_dir, stripped))
+
+        for root in (backend_dir, app_root):
+            for folder_name in ('module_images', 'modules_images'):
+                base_dir = os.path.join(root, 'uploads', folder_name, str(module_image.module_id))
+                candidates.append(os.path.join(base_dir, os.path.basename(module_image.image_path)))
+
+    chosen = next((path for path in candidates if path and os.path.exists(path)), None)
+    return os.path.abspath(chosen) if chosen else None
+
+
+def _convert_image_to_png(source_path, image_id):
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.warning("Pillow is unavailable; skipping non-PNG/JPEG export image conversion.")
+        return None, []
+
+    temp_path = _get_export_image_temp_path(image_id, '.png')
+
+    try:
+        with Image.open(source_path) as pil_image:
+            detected_format = str(pil_image.format or "").upper()
+            file_ext = os.path.splitext(source_path)[1].lower()
+
+            if detected_format in {"WMF", "EMF"} or file_ext in {".wmf", ".emf"}:
+                try:
+                    pil_image.load(dpi=300)
+                except TypeError:
+                    pil_image.load()
+                except Exception:
+                    pass
+
+            if pil_image.mode in ('RGBA', 'LA'):
+                base = pil_image.convert('RGBA')
+                background = Image.new('RGBA', base.size, (255, 255, 255, 255))
+                rendered = Image.alpha_composite(background, base).convert('RGB')
+            elif pil_image.mode != 'RGB':
+                rendered = pil_image.convert('RGB')
+            else:
+                rendered = pil_image.copy()
+
+            rendered.save(temp_path, format='PNG', optimize=True)
+            return temp_path, [temp_path]
+    except Exception as exc:
+        logger.warning(
+            f"Failed to convert question image {image_id} for export from {source_path}: {exc}"
+        )
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        return None, []
+
+
+def _resolve_question_image_for_export(question):
+    image_id = question.get('image_id')
+    if not image_id:
+        return None, []
+
+    try:
+        from app.module_processor.models import ModuleImage
+
+        module_image = ModuleImage.query.get(image_id)
+        if not module_image:
+            logger.warning(f"Question image {image_id} was referenced during export but not found.")
+            return None, []
+    except Exception as exc:
+        logger.warning(f"Unable to load question image {image_id} for export: {exc}")
+        return None, []
+
+    source_path = _resolve_module_image_source_path(module_image)
+    if not source_path:
+        logger.warning(
+            f"Question image file missing on disk for image_id={image_id}, module_id={module_image.module_id}"
+        )
+        return None, []
+
+    source_ext = os.path.splitext(source_path)[1].lower()
+    if source_ext in _PASSTHROUGH_IMAGE_EXTENSIONS:
+        return source_path, []
+
+    return _convert_image_to_png(source_path, image_id)
 
 
 class WordExporter:
@@ -26,12 +149,55 @@ class WordExporter:
             # Use Path(__file__).resolve() so the path is always correct
             # regardless of the working directory at startup.
             self.logo_path = str(Path(__file__).resolve().parent / 'assets' / 'school_logo.jpeg')
+        self._temp_export_paths = []
     
     def _sanitize_text(self, text):
         """Sanitize text for Word export"""
         if text is None:
             return ""
         return str(text).strip()
+
+    def _cleanup_temp_export_paths(self):
+        for path in self._temp_export_paths:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except OSError as exc:
+                logger.warning(f"Failed to clean temporary export image {path}: {exc}")
+        self._temp_export_paths = []
+
+    def _add_question_image(self, doc, question):
+        image_path, cleanup_paths = _resolve_question_image_for_export(question)
+        self._temp_export_paths.extend(cleanup_paths)
+
+        if not image_path or not os.path.exists(image_path):
+            return
+
+        image_width = Inches(4.8)
+
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(image_path) as pil_image:
+                width_px, height_px = pil_image.size
+
+            if width_px > 0 and height_px > 0:
+                native_width = width_px / 96.0
+                native_height = height_px / 96.0
+                scale = min(4.8 / native_width, 3.6 / native_height, 2.0)
+                image_width = Inches(native_width * scale)
+        except Exception:
+            pass
+
+        try:
+            paragraph = doc.add_paragraph()
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(3)
+            paragraph.paragraph_format.line_spacing = 1.0
+            paragraph.add_run().add_picture(image_path, width=image_width)
+        except Exception as exc:
+            logger.warning(f"Failed to embed question image in DOCX export: {exc}")
     
     def _add_exam_header(self, doc, exam_data=None):
         """
@@ -211,6 +377,7 @@ class WordExporter:
         """
         Export exam to Word - EXACT FORMAT with COMPRESSED SPACING
         """
+        self._temp_export_paths = []
         try:
             logger.info(f"Starting exam Word export to {output_path}")
             
@@ -279,7 +446,9 @@ class WordExporter:
         except Exception as e:
             logger.error(f"❌ Error exporting exam to Word: {str(e)}", exc_info=True)
             return False
-    
+        finally:
+            self._cleanup_temp_export_paths()
+
     def _add_section_header(self, doc, numeral, instruction):
         """Add a Roman-numeral section header matching the reference docx.
         e.g.  I.  MULTIPLE CHOICE: Choose the letter of the correct answer.
@@ -435,6 +604,8 @@ class WordExporter:
             p_q.paragraph_format.space_before = Pt(0)
             p_q.paragraph_format.space_after = Pt(1)  # Minimal spacing
             p_q.paragraph_format.line_spacing = 1.0  # Single spacing
+
+            self._add_question_image(doc, q)
             
             # Options - fixed two-column grid (A/C on row 1, B/D on row 2)
             if len(options) >= 2:
@@ -472,6 +643,8 @@ class WordExporter:
             p_q.paragraph_format.space_before = Pt(0)
             p_q.paragraph_format.space_after = Pt(2)  # Minimal spacing
             p_q.paragraph_format.line_spacing = 1.0
+
+            self._add_question_image(doc, q)
             question_number += 1
         
         # COMPRESSED SPACING after section
@@ -500,6 +673,8 @@ class WordExporter:
             p_q.paragraph_format.space_before = Pt(0)
             p_q.paragraph_format.space_after = Pt(2)
             p_q.paragraph_format.line_spacing = 1.0
+
+            self._add_question_image(doc, q)
             question_number += 1
         
         # COMPRESSED SPACING after section
@@ -530,6 +705,8 @@ class WordExporter:
             p_q.paragraph_format.space_before = Pt(0)
             p_q.paragraph_format.space_after = Pt(3)
             p_q.paragraph_format.line_spacing = 1.0
+
+            self._add_question_image(doc, q)
             question_number += 1
 
         # COMPRESSED SPACING after section

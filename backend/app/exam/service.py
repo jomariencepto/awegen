@@ -1629,8 +1629,9 @@ class ExamService:
     def get_pending_approvals(page=1, per_page=10):
         """Get exams pending approval"""
         try:
-            exams = Exam.query.filter_by(
-                admin_status='pending'
+            exams = Exam.query.filter(
+                Exam.admin_status == 'pending',
+                Exam.submitted_to_admin.is_(True)
             ).paginate(
                 page=page,
                 per_page=per_page,

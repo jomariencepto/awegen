@@ -98,6 +98,79 @@ class DepartmentService:
             }, 500
 
     @staticmethod
+    def save_created_exam(exam_id, editor_id, exam_data=None):
+        """
+        Save a department-created exam and move it into the department pending queue.
+        This keeps the teacher review flow separate from the department-created flow.
+        """
+        try:
+            editor = User.query.get(editor_id)
+            if not editor:
+                return {'success': False, 'message': 'User not found'}, 404
+
+            exam = Exam.query.get(exam_id)
+            if not exam:
+                return {'success': False, 'message': 'Exam not found'}, 404
+
+            editor_role = (editor.role or '').lower()
+            if editor_role not in ['department', 'department_head', 'admin']:
+                return {'success': False, 'message': 'Insufficient permissions'}, 403
+
+            if editor_role != 'admin':
+                if not editor.department_id:
+                    return {'success': False, 'message': 'User is not assigned to a department'}, 400
+                if exam.teacher_id != editor.user_id:
+                    return {
+                        'success': False,
+                        'message': 'Only the department user who created this exam can save it.'
+                    }, 403
+                if exam.department_id and exam.department_id != editor.department_id:
+                    return {
+                        'success': False,
+                        'message': 'Exam does not belong to your department.'
+                    }, 403
+
+            if (exam.admin_status or '').lower() == 'approved':
+                return {'success': False, 'message': 'Approved exams can no longer be changed'}, 409
+
+            save_payload = exam_data if isinstance(exam_data, dict) else {}
+            result, status_code = ExamService.update_exam(exam_id, save_payload)
+            if status_code != 200 or not result.get('success'):
+                return result, status_code
+
+            exam = Exam.query.get(exam_id)
+            if not exam:
+                return {'success': False, 'message': 'Exam not found after save'}, 404
+
+            exam.department_id = exam.department_id or editor.department_id
+            exam.admin_status = 'pending'
+            exam.submitted_to_admin = False
+            exam.submitted_at = None
+            exam.sent_to_department = False
+            exam.is_published = False
+            exam.reviewed_by = None
+            exam.reviewed_at = None
+            exam.admin_feedback = None
+            exam.rejection_reason = None
+
+            db.session.commit()
+
+            return {
+                'success': True,
+                'message': 'Exam saved and moved to Pending Approvals.',
+                'exam': exam.to_dict(),
+                'exam_admin_status': exam.admin_status,
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error saving department-created exam: {str(e)}", exc_info=True)
+            db.session.rollback()
+            return {
+                'success': False,
+                'message': f'Failed to save department exam: {str(e)}'
+            }, 500
+
+    @staticmethod
     def approve_created_exam(exam_id, approver_id):
         """
         Finalize a department-created exam after question edits.

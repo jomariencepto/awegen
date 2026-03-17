@@ -8,6 +8,10 @@ import { Label } from '../../components/ui/label';
 import { AlertCircle, FileText, Clock } from 'lucide-react';
 import api from '../../utils/api';
 
+const isDepartmentCreatedPendingExam = (exam) => (
+  String(exam?.admin_status || '').toLowerCase() === 'pending' && !exam?.submitted_to_admin
+);
+
 function PendingApprovals() {
   const [exams, setExams] = useState([]);
   const [filteredExams, setFilteredExams] = useState([]);
@@ -82,7 +86,7 @@ function PendingApprovals() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Pending Approvals</h1>
             <p className="mt-1 text-sm text-gray-600">
-              Review and approve exams submitted by teachers
+              Review pending teacher submissions and department-created exams
             </p>
           </div>
         </div>
@@ -113,7 +117,7 @@ function PendingApprovals() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Pending Approvals</h1>
           <p className="mt-1 text-sm text-gray-600">
-            Review and approve exams submitted by teachers
+            Review pending teacher submissions and department-created exams
           </p>
         </div>
         <div className="flex items-center gap-2 mt-4 md:mt-0">
@@ -160,7 +164,15 @@ function PendingApprovals() {
         </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredExams.map((exam) => (
+          {filteredExams.map((exam) => {
+            const isDepartmentCreated = isDepartmentCreatedPendingExam(exam);
+            const reviewHref = isDepartmentCreated
+              ? `/department/review-questions/${exam.exam_id}`
+              : `/department/exam-review/${exam.exam_id}`;
+            const reviewLabel = isDepartmentCreated ? 'Edit Questions' : 'Review Exam';
+            const ownerLabel = isDepartmentCreated ? 'Created By' : 'Teacher';
+
+            return (
             <Card key={exam.exam_id} className="hover:shadow-lg transition-shadow">
               <CardHeader>
                 <div className="flex justify-between items-start">
@@ -177,7 +189,7 @@ function PendingApprovals() {
               <CardContent className="space-y-4">
                 <div className="space-y-2 text-sm text-gray-600">
                   <p>
-                    <span className="font-medium">Teacher:</span>{' '}
+                    <span className="font-medium">{ownerLabel}:</span>{' '}
                     {exam.teacher_name || `Teacher ID: ${exam.teacher_id}`}
                   </p>
                   <p>
@@ -199,8 +211,8 @@ function PendingApprovals() {
                 </div>
                 <div className="flex gap-2 pt-2">
                   <Button size="sm" asChild className="flex-1">
-                    <Link to={`/department/exam-review/${exam.exam_id}`}>
-                      Review Exam
+                    <Link to={reviewHref}>
+                      {reviewLabel}
                     </Link>
                   </Button>
                   <Button size="sm" variant="outline" asChild className="flex-1">
@@ -211,7 +223,8 @@ function PendingApprovals() {
                 </div>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
       )}
 

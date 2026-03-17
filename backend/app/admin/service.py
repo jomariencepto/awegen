@@ -45,7 +45,10 @@ class AdminService:
                 'total_subjects': Subject.query.count(),
                 'total_exams': Exam.query.count(),
                 'pending_approvals': User.query.filter_by(is_approved=False).count(),
-                'pending_exam_approvals': Exam.query.filter_by(admin_status='pending').count()
+                'pending_exam_approvals': Exam.query.filter(
+                    Exam.admin_status == 'pending',
+                    Exam.submitted_to_admin.is_(True)
+                ).count()
             }
             
             return {
@@ -210,7 +213,7 @@ class AdminService:
 
     @staticmethod
     def update_exam_password(settings_data):
-        """Update exam download password used for PDF encryption."""
+        """Update exam download password used for PDF and DOCX protection."""
         try:
             password_raw = settings_data.get('password') if isinstance(settings_data, dict) else None
             if not isinstance(password_raw, str):

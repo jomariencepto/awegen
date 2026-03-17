@@ -192,6 +192,25 @@ def create_department_exam():
         }), 500
 
 
+@department_bp.route('/exams/<int:exam_id>/save-created', methods=['PUT', 'POST'])
+@jwt_required()
+@role_required(['department', 'department_head', 'admin'])
+def save_created_exam(exam_id):
+    """Save a department-created exam and move it into the department pending queue."""
+    try:
+        data = request.get_json(silent=True) or {}
+        editor_id = int(get_jwt_identity())
+        result, status_code = DepartmentService.save_created_exam(exam_id, editor_id, data)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error saving department-created exam: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Failed to save department exam: {str(e)}'
+        }), 500
+
+
 @department_bp.route('/teachers', methods=['GET'])
 @jwt_required()
 def get_my_department_teachers():

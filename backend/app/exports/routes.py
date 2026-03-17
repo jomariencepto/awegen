@@ -26,6 +26,7 @@ from app.utils.logger import get_logger
 import traceback
 
 logger = get_logger(__name__)
+DOCX_ENCRYPTED_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 # ==========================================
 # BLUEPRINTS
@@ -101,6 +102,153 @@ def _encrypt_pdf_if_needed(path):
         return path, []
 
 
+def _protect_docx_with_msoffcrypto(path, doc_password, protected_path):
+    """Protect DOCX using msoffcrypto-tool when available."""
+    from msoffcrypto.format.ooxml import OOXMLFile
+
+    with open(path, 'rb') as source_file, open(protected_path, 'wb') as target_file:
+        OOXMLFile(source_file).encrypt(doc_password, target_file)
+
+
+def _protect_docx_with_word_com(path, doc_password, protected_path):
+    """Protect DOCX using Microsoft Word COM automation."""
+    word_app = None
+    document = None
+    pythoncom_module = None
+    com_initialized = False
+
+    try:
+        try:
+            import pythoncom as _pythoncom
+            pythoncom_module = _pythoncom
+            pythoncom_module.CoInitialize()
+            com_initialized = True
+        except ImportError:
+            pythoncom_module = None
+
+        import win32com.client
+
+        word_app = win32com.client.DispatchEx('Word.Application')
+        word_app.Visible = False
+        word_app.DisplayAlerts = 0
+
+        document = word_app.Documents.Open(
+            FileName=os.path.abspath(path),
+            ConfirmConversions=False,
+            ReadOnly=False,
+            AddToRecentFiles=False,
+            Visible=False,
+            OpenAndRepair=False,
+            NoEncodingDialog=True,
+        )
+        document.SaveAs2(
+            FileName=os.path.abspath(protected_path),
+            FileFormat=12,
+            Password=doc_password,
+            AddToRecentFiles=False,
+            ReadOnlyRecommended=False,
+        )
+    finally:
+        if document is not None:
+            try:
+                document.Close(False)
+            except Exception:
+                pass
+        if word_app is not None:
+            try:
+                word_app.Quit()
+            except Exception:
+                pass
+        if com_initialized and pythoncom_module is not None:
+            try:
+                pythoncom_module.CoUninitialize()
+            except Exception:
+                pass
+
+
+def _is_password_protected_docx(path):
+    """Return True when the DOCX is wrapped in Office password encryption."""
+    try:
+        with open(path, 'rb') as protected_file:
+            return protected_file.read(len(DOCX_ENCRYPTED_MAGIC)) == DOCX_ENCRYPTED_MAGIC
+    except OSError:
+        return False
+
+
+def _protect_docx_if_needed(path):
+    """Protect DOCX with the configured download password when available."""
+    if not path.lower().endswith('.docx'):
+        return path, []
+
+    doc_password = get_exam_download_password()
+    if not doc_password:
+        return path, []
+
+    protected_path = get_temp_path(f"enc_{os.path.basename(path)}")
+
+    try:
+        try:
+            _protect_docx_with_msoffcrypto(path, doc_password, protected_path)
+            if os.path.exists(protected_path) and _is_password_protected_docx(protected_path):
+                logger.info(
+                    f"Password-protected DOCX generated at {protected_path} via msoffcrypto-tool"
+                )
+                return protected_path, [protected_path]
+            logger.warning(
+                "msoffcrypto-tool returned a DOCX without Office encryption; falling back to Word COM."
+            )
+        except ImportError:
+            logger.info(
+                "msoffcrypto-tool not available; falling back to Word COM for DOCX protection."
+            )
+        except Exception as msoffcrypto_error:
+            logger.warning(
+                f"msoffcrypto-tool failed for DOCX protection ({msoffcrypto_error}); "
+                "falling back to Word COM."
+            )
+            try:
+                if os.path.exists(protected_path):
+                    os.remove(protected_path)
+            except OSError:
+                pass
+
+        _protect_docx_with_word_com(path, doc_password, protected_path)
+        if os.path.exists(protected_path) and _is_password_protected_docx(protected_path):
+            logger.info(f"Password-protected DOCX generated at {protected_path} via Word COM")
+            return protected_path, [protected_path]
+
+        raise RuntimeError(
+            "DOCX password protection is enabled, but the exported DOCX could not be encrypted."
+        )
+    except ImportError:
+        logger.error(
+            "DOCX password protection dependencies are unavailable; refusing to send an unprotected DOCX."
+        )
+        raise RuntimeError(
+            "DOCX password protection is enabled, but the required DOCX encryption dependency is unavailable."
+        )
+    except Exception as e:
+        logger.error(f"Failed to protect DOCX {path}: {e}", exc_info=True)
+        try:
+            if os.path.exists(protected_path):
+                os.remove(protected_path)
+        except OSError:
+            pass
+        raise RuntimeError(
+            "DOCX password protection is enabled, but the exported DOCX could not be encrypted."
+        ) from e
+
+
+def _protect_download_if_needed(path):
+    """Apply format-specific password protection before sending the file."""
+    lowered = path.lower()
+    if lowered.endswith('.pdf'):
+        return _encrypt_pdf_if_needed(path)
+    if lowered.endswith('.docx'):
+        return _protect_docx_if_needed(path)
+    return path, []
+
+
 def _sanitize_filename(text):
     """Helper to create safe filenames using Python regex."""
     return re.sub(r'[^a-z0-9]', '_', str(text).lower())
@@ -150,7 +298,15 @@ def _send_file_response(output_path, download_name, mimetype, inline=None):
     inline: when True, return Content-Disposition inline (browser preview/print).
             If None, auto-detect via request.args.get('inline') == 'true'.
     """
-    encrypted_path, extras = _encrypt_pdf_if_needed(output_path)
+    try:
+        encrypted_path, extras = _protect_download_if_needed(output_path)
+    except Exception:
+        try:
+            if os.path.exists(output_path):
+                os.remove(output_path)
+        except OSError as cleanup_error:
+            logger.warning(f"Could not delete temp file after protection failure: {cleanup_error}")
+        raise
 
     # Infer inline flag if not provided
     if inline is None:

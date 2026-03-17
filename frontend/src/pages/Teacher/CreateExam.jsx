@@ -202,6 +202,10 @@ function CreateExam({ mode = 'teacher' }) {
   const selectedModulesDraftKey = currentUser?.user_id
     ? `create-exam-selected-modules:${isDepartmentMode ? 'department' : 'teacher'}:${currentUser.user_id}`
     : null;
+  const hasGeneratedExam = Boolean(generatedExam?.exam_id);
+  const generationLockedMessage = isDepartmentMode
+    ? 'This exam is already generated for this tab. Save it to edit questions, or refresh the tab to create a new department exam.'
+    : 'This exam is already generated for this tab. Save it now, or refresh the tab to create a new exam.';
 
   const { register, handleSubmit, setValue, watch, formState: { errors } } = useForm();
   const formatSubjectLabel = (subject) => subject?.subject_name || 'Unnamed Subject';
@@ -581,6 +585,10 @@ function CreateExam({ mode = 'teacher' }) {
 
   const onGenerateSubmit = async (data) => {
     if (!currentUser) return;
+    if (hasGeneratedExam) {
+      toast.error(generationLockedMessage);
+      return;
+    }
 
     if (data.duration_minutes > 150) { toast.error('Duration cannot exceed 150 minutes'); return; }
     if (data.passing_score    > 100) { toast.error('Passing score cannot exceed 100%');   return; }
@@ -654,8 +662,8 @@ function CreateExam({ mode = 'teacher' }) {
       setTimeout(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
       toast.success(
         isDepartmentMode
-          ? 'Exam generated successfully! Save it first, then edit questions before approving.'
-          : 'Exam generated successfully!'
+          ? 'Exam generated successfully! Save it first, then edit questions before approving. Refresh the tab if you need a different exam.'
+          : 'Exam generated successfully! Save it now, or refresh the tab to create a new one.'
       );
       setGenerationProgress(100);
     } catch (error) {
@@ -691,17 +699,20 @@ function CreateExam({ mode = 'teacher' }) {
   const onSaveExam = async () => {
     if (!generatedExam) return;
     try {
-      await api.post(`/exams/${generatedExam.exam_id}/save`, {});
+      const saveEndpoint = isDepartmentMode
+        ? `/departments/exams/${generatedExam.exam_id}/save-created`
+        : `/exams/${generatedExam.exam_id}/save`;
+      await api.post(saveEndpoint, {});
       if (selectedModulesDraftKey) {
         sessionStorage.removeItem(selectedModulesDraftKey);
       }
       const successMsg = isDepartmentMode
-        ? 'Exam saved. You can now edit questions before approving.'
+        ? 'Exam saved and moved to Pending Approvals.'
         : 'Exam saved successfully!';
       toast.success(successMsg);
       navigate(
         isDepartmentMode
-          ? `/department/review-questions/${generatedExam.exam_id}`
+          ? '/department/pending-approvals'
           : '/teacher/manage-exams'
       );
     } catch (error) {
@@ -736,7 +747,7 @@ function CreateExam({ mode = 'teacher' }) {
     'Enter exam title, category, duration, and total score limit.',
     'Configure question types, question counts, and allocated time.',
     `Select module(s), then set teaching hours for each selected module using the ${COVERAGE_SCALE_HOURS}h term baseline.`,
-    `Click Generate Exam, review the result, then click ${saveButtonLabel}.`,
+    `Click Generate Exam once, review the result, then click ${saveButtonLabel}. Refresh the tab to create a new exam.`,
   ];
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -1145,17 +1156,43 @@ function CreateExam({ mode = 'teacher' }) {
 
             </CardContent>
 
-            <CardFooter style={{ padding:'16px 24px', borderTop:'1px solid #E5E7EB', background:'#F9FAFB' }}>
+            <CardFooter
+              style={{
+                padding:'16px 24px',
+                borderTop:'1px solid #E5E7EB',
+                background:'#F9FAFB',
+                display:'flex',
+                alignItems:'center',
+                justifyContent:'space-between',
+                gap:'12px',
+                flexWrap:'wrap',
+              }}
+            >
+              {hasGeneratedExam && (
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: '12px',
+                    color: '#92400E',
+                    lineHeight: 1.5,
+                    flex: '1 1 260px',
+                  }}
+                >
+                  {generationLockedMessage}
+                </p>
+              )}
               <Button
                 type="submit"
                 disabled={
-                  isLoading
+                  isLoading || hasGeneratedExam
                 }
                 className="btn-generate"
               >
                 {isLoading
                   ? <><Loader2 size={16} style={{ marginRight:8, animation:'spin 1s linear infinite' }} />Generating…</>
-                  : ' Generate Exam'}
+                  : hasGeneratedExam
+                    ? ' Exam Generated'
+                    : ' Generate Exam'}
               </Button>
             </CardFooter>
           </form>

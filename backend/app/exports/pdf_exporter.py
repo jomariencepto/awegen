@@ -2,6 +2,7 @@ import os
 import json
 import html
 import tempfile
+import uuid
 from pathlib import Path
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable
@@ -9,6 +10,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY, TA_RIGHT
+from flask import current_app, has_app_context
 from app.utils.logger import get_logger
 
 # Try to import Word exporter for format consistency
@@ -27,6 +29,127 @@ except ImportError:
 
 logger = get_logger(__name__)
 
+_PASSTHROUGH_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.jfif'}
+
+
+def _get_backend_root():
+    if has_app_context():
+        return os.path.dirname(current_app.root_path)
+    return str(Path(__file__).resolve().parents[2])
+
+
+def _get_app_root():
+    if has_app_context():
+        return current_app.root_path
+    return os.path.join(_get_backend_root(), 'app')
+
+
+def _get_export_image_temp_path(image_id, suffix='.png'):
+    temp_dir = os.path.join(_get_backend_root(), 'temp', 'export_images')
+    os.makedirs(temp_dir, exist_ok=True)
+    return os.path.join(temp_dir, f"question_image_{image_id}_{uuid.uuid4().hex}{suffix}")
+
+
+def _resolve_module_image_source_path(module_image):
+    backend_dir = _get_backend_root()
+    app_root = _get_app_root()
+    candidates = []
+
+    if module_image.image_path:
+        candidates.append(module_image.image_path)
+
+        if not os.path.isabs(module_image.image_path):
+            candidates.append(os.path.join(backend_dir, module_image.image_path))
+            candidates.append(os.path.join(app_root, module_image.image_path))
+
+        if f"{os.sep}app{os.sep}" in module_image.image_path:
+            stripped = module_image.image_path.replace(f"{os.sep}app{os.sep}", os.sep)
+            candidates.append(stripped)
+            candidates.append(os.path.join(backend_dir, stripped))
+
+        for root in (backend_dir, app_root):
+            for folder_name in ('module_images', 'modules_images'):
+                base_dir = os.path.join(root, 'uploads', folder_name, str(module_image.module_id))
+                candidates.append(os.path.join(base_dir, os.path.basename(module_image.image_path)))
+
+    chosen = next((path for path in candidates if path and os.path.exists(path)), None)
+    return os.path.abspath(chosen) if chosen else None
+
+
+def _convert_image_to_png(source_path, image_id):
+    try:
+        from PIL import Image as PILImage
+    except ImportError:
+        logger.warning("Pillow is unavailable; skipping non-PNG/JPEG export image conversion.")
+        return None, []
+
+    temp_path = _get_export_image_temp_path(image_id, '.png')
+
+    try:
+        with PILImage.open(source_path) as pil_image:
+            detected_format = str(pil_image.format or "").upper()
+            file_ext = os.path.splitext(source_path)[1].lower()
+
+            if detected_format in {"WMF", "EMF"} or file_ext in {".wmf", ".emf"}:
+                try:
+                    pil_image.load(dpi=300)
+                except TypeError:
+                    pil_image.load()
+                except Exception:
+                    pass
+
+            if pil_image.mode in ('RGBA', 'LA'):
+                base = pil_image.convert('RGBA')
+                background = PILImage.new('RGBA', base.size, (255, 255, 255, 255))
+                rendered = PILImage.alpha_composite(background, base).convert('RGB')
+            elif pil_image.mode != 'RGB':
+                rendered = pil_image.convert('RGB')
+            else:
+                rendered = pil_image.copy()
+
+            rendered.save(temp_path, format='PNG', optimize=True)
+            return temp_path, [temp_path]
+    except Exception as exc:
+        logger.warning(
+            f"Failed to convert question image {image_id} for export from {source_path}: {exc}"
+        )
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        return None, []
+
+
+def _resolve_question_image_for_export(question):
+    image_id = question.get('image_id')
+    if not image_id:
+        return None, []
+
+    try:
+        from app.module_processor.models import ModuleImage
+
+        module_image = ModuleImage.query.get(image_id)
+        if not module_image:
+            logger.warning(f"Question image {image_id} was referenced during export but not found.")
+            return None, []
+    except Exception as exc:
+        logger.warning(f"Unable to load question image {image_id} for export: {exc}")
+        return None, []
+
+    source_path = _resolve_module_image_source_path(module_image)
+    if not source_path:
+        logger.warning(
+            f"Question image file missing on disk for image_id={image_id}, module_id={module_image.module_id}"
+        )
+        return None, []
+
+    source_ext = os.path.splitext(source_path)[1].lower()
+    if source_ext in _PASSTHROUGH_IMAGE_EXTENSIONS:
+        return source_path, []
+
+    return _convert_image_to_png(source_path, image_id)
+
 
 class PDFExporter:
     """
@@ -39,6 +162,7 @@ class PDFExporter:
 
     def __init__(self):
         self.styles = getSampleStyleSheet()
+        self._temp_export_paths = []
         
         # Logo path - use Path(__file__).resolve() so the path is always
         # correct regardless of the working directory at startup.
@@ -95,6 +219,39 @@ class PDFExporter:
             alignment=TA_CENTER,
             leading=14
         )
+
+    def _cleanup_temp_export_paths(self):
+        for path in self._temp_export_paths:
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except OSError as exc:
+                logger.warning(f"Failed to clean temporary export image {path}: {exc}")
+        self._temp_export_paths = []
+
+    def _append_question_image(self, story, question):
+        image_path, cleanup_paths = _resolve_question_image_for_export(question)
+        self._temp_export_paths.extend(cleanup_paths)
+
+        if not image_path or not os.path.exists(image_path):
+            return
+
+        try:
+            flowable = Image(image_path)
+            if flowable.imageWidth and flowable.imageHeight:
+                scale = min(
+                    4.8 * inch / flowable.imageWidth,
+                    3.6 * inch / flowable.imageHeight,
+                    2.0,
+                )
+                flowable.drawWidth = flowable.imageWidth * scale
+                flowable.drawHeight = flowable.imageHeight * scale
+            else:
+                flowable.drawWidth = 4.8 * inch
+            story.append(flowable)
+            story.append(Spacer(1, 0.08 * inch))
+        except Exception as exc:
+            logger.warning(f"Failed to embed question image in PDF export: {exc}")
 
     def _extract_section_instruction(self, questions, default_instruction):
         """
@@ -274,6 +431,7 @@ class PDFExporter:
 
     def _export_via_reportlab(self, data, output_path, is_answer_key=False, include_header=True):
         """Export via ReportLab - Similar format to Word (fallback)"""
+        self._temp_export_paths = []
         try:
             doc = SimpleDocTemplate(
                 output_path,
@@ -408,6 +566,8 @@ class PDFExporter:
         except Exception as e:
             logger.error(f"ReportLab export error: {str(e)}", exc_info=True)
             return False
+        finally:
+            self._cleanup_temp_export_paths()
 
     @staticmethod
     def _is_mcq_option_correct(option_label, option_text, correct_answer):
@@ -494,6 +654,7 @@ class PDFExporter:
             # Question
             q_para = Paragraph(f"{question_number}. {question_text}", self.question_style)
             story.append(q_para)
+            self._append_question_image(story, q)
              
             # Options - fixed aligned grid: row1 A/C, row2 B/D
             if isinstance(options, list) and options:
@@ -530,6 +691,7 @@ class PDFExporter:
             
             q_para = Paragraph(q_text, self.question_style)
             story.append(q_para)
+            self._append_question_image(story, q)
             question_number += 1
         
         story.append(Spacer(1, 0.15*inch))
@@ -558,6 +720,7 @@ class PDFExporter:
             
             q_para = Paragraph(f"{question_number}. {question_text}", self.question_style)
             story.append(q_para)
+            self._append_question_image(story, q)
             question_number += 1
         
         story.append(Spacer(1, 0.15*inch))
@@ -591,6 +754,7 @@ class PDFExporter:
                 question_text = str(q.get('question_text', '')).strip()
                 q_para = Paragraph(f"{question_number}. {question_text} _________________", self.question_style)
                 story.append(q_para)
+                self._append_question_image(story, q)
                 question_number += 1
 
         story.append(Spacer(1, 0.15*inch))
