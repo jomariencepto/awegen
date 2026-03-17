@@ -39,6 +39,7 @@ const Settings = lazy(() => import('./pages/Department/Settings'));
 const ExamReview = lazy(() => import('./pages/Department/ExamReview'));
 const DepartmentExamPreview = lazy(() => import('./pages/Department/DepartmentExamPreview'));
 const DepartmentCreateExam = lazy(() => import('./pages/Department/CreateExam'));
+const DepartmentReviewQuestions = lazy(() => import('./pages/Department/ReviewQuestions'));
 const UploadModuleDepartment = lazy(() => import('./pages/Department/UploadModule'));
 const TOSReports = lazy(() => import('./pages/Department/TOSReports'));
 const DepartmentNotifications = lazy(() => import('./pages/Department/Notifications'));
@@ -289,6 +290,7 @@ function App() {
               <Route path="manage-users" element={renderLazyElement(ManageUsers)} />
               <Route path="settings" element={renderLazyElement(Settings)} />
               <Route path="exam-review/:examId" element={renderLazyElement(ExamReview)} />
+              <Route path="review-questions/:examId" element={renderLazyElement(DepartmentReviewQuestions)} />
               <Route path="exam-preview/:examId" element={renderLazyElement(DepartmentExamPreview)} />
               <Route path="upload-module" element={renderLazyElement(UploadModuleDepartment)} />
               <Route path="tos-reports" element={renderLazyElement(TOSReports)} />

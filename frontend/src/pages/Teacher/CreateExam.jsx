@@ -477,7 +477,11 @@ function CreateExam({ mode = 'teacher' }) {
       const response = await api.post(createEndpoint, payload);
       setGeneratedExam(response.data);
       setTimeout(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
-      toast.success(isDepartmentMode ? 'Exam generated & auto-approved!' : 'Exam generated successfully!');
+      toast.success(
+        isDepartmentMode
+          ? 'Exam generated successfully! Save it first, then edit questions before approving.'
+          : 'Exam generated successfully!'
+      );
       setGenerationProgress(100);
     } catch (error) {
       const responseData = error.response?.data;
@@ -513,9 +517,15 @@ function CreateExam({ mode = 'teacher' }) {
     if (!generatedExam) return;
     try {
       await api.post(`/exams/${generatedExam.exam_id}/save`, {});
-      const successMsg = isDepartmentMode ? 'Exam saved & auto-approved!' : 'Exam saved successfully!';
+      const successMsg = isDepartmentMode
+        ? 'Exam saved. You can now edit questions before approving.'
+        : 'Exam saved successfully!';
       toast.success(successMsg);
-      navigate(isDepartmentMode ? '/department/approved-exams' : '/teacher/manage-exams');
+      navigate(
+        isDepartmentMode
+          ? `/department/review-questions/${generatedExam.exam_id}`
+          : '/teacher/manage-exams'
+      );
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to save exam');
     }
@@ -543,7 +553,7 @@ function CreateExam({ mode = 'teacher' }) {
 
     return Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]));
   }, [availableModules, subjectsById]);
-  const saveButtonLabel = isDepartmentMode ? 'Save & Approve' : 'Save Exam';
+  const saveButtonLabel = isDepartmentMode ? 'Save & Edit Questions' : 'Save Exam';
   const createExamSteps = [
     'Enter exam title, category, duration, and total score limit.',
     'Configure question types, question counts, and allocated time.',
@@ -985,7 +995,9 @@ function CreateExam({ mode = 'teacher' }) {
                 <div>
                   <CardTitle>Generated Exam</CardTitle>
                   <CardDescription>
-                    {isDepartmentMode ? 'Review your exam · it will be approved automatically on save' : 'Review your exam before saving'}
+                    {isDepartmentMode
+                      ? 'Review your exam, then save it to edit questions before approving'
+                      : 'Review your exam before saving'}
                   </CardDescription>
                 </div>
                 <div className="results-actions">

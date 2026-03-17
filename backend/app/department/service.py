@@ -3,10 +3,10 @@ from app.auth.models import User, Role
 from app.users.models import Department, Subject
 from app.exam.models import Exam, ExamQuestion
 from app.exam.service import ExamService
-from app.module_processor.models import Module
+from app.module_processor.models import Module, ModuleQuestion
 from app.notifications.models import Notification
 from app.utils.logger import get_logger
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 import json
 import os
 
@@ -59,7 +59,8 @@ class DepartmentService:
     @staticmethod
     def create_exam_for_department(exam_data, creator_id):
         """
-        Create an exam on behalf of a department head and auto-approve it.
+        Create an exam on behalf of a department user.
+        The exam remains editable until the department creator approves it.
         """
         try:
             creator = User.query.get(creator_id)
@@ -77,16 +78,13 @@ class DepartmentService:
             result, status_code = ExamService.create_exam(
                 exam_data,
                 teacher_id=creator_id,
-                auto_approve=True,
-                approver_id=creator_id,
+                auto_approve=False,
                 department_id=creator.department_id
             )
 
-            # Add a helpful message hinting at auto-approval
             if isinstance(result, dict) and result.get('success'):
-                base_msg = result.get('message', 'Exam created successfully')
-                result['message'] = f"{base_msg} (auto-approved for your department)"
-                result['admin_status'] = 'approved'
+                result['message'] = 'Exam created successfully. Edit questions, then approve when ready.'
+                result['admin_status'] = 'draft'
 
             return result, status_code
 
@@ -97,6 +95,89 @@ class DepartmentService:
             return {
                 'success': False,
                 'message': f'Failed to create department exam: {str(e)}'
+            }, 500
+
+    @staticmethod
+    def approve_created_exam(exam_id, approver_id):
+        """
+        Finalize a department-created exam after question edits.
+        This stays separate from the teacher submit-for-approval flow.
+        """
+        try:
+            from datetime import datetime
+
+            approver = User.query.get(approver_id)
+            if not approver:
+                return {'success': False, 'message': 'User not found'}, 404
+
+            exam = Exam.query.get(exam_id)
+            if not exam:
+                return {'success': False, 'message': 'Exam not found'}, 404
+
+            approver_role = (approver.role or '').lower()
+            if approver_role not in ['department', 'department_head', 'admin']:
+                return {'success': False, 'message': 'Insufficient permissions'}, 403
+
+            if approver_role != 'admin':
+                if not approver.department_id:
+                    return {'success': False, 'message': 'User is not assigned to a department'}, 400
+                if exam.teacher_id != approver.user_id:
+                    return {
+                        'success': False,
+                        'message': 'Only the department user who created this exam can approve it.'
+                    }, 403
+                if exam.department_id and exam.department_id != approver.department_id:
+                    return {
+                        'success': False,
+                        'message': 'Exam does not belong to your department.'
+                    }, 403
+
+            if exam.admin_status == 'approved':
+                return {'success': False, 'message': 'Exam is already approved'}, 409
+
+            question_count = ExamQuestion.query.filter_by(exam_id=exam_id).count()
+            if question_count == 0:
+                return {
+                    'success': False,
+                    'message': 'Cannot approve exam without questions.'
+                }, 400
+
+            flagged_count = ExamQuestion.query.filter(
+                ExamQuestion.exam_id == exam_id,
+                ExamQuestion.feedback.isnot(None),
+                func.length(func.trim(ExamQuestion.feedback)) > 0,
+            ).count()
+            if flagged_count > 0:
+                return {
+                    'success': False,
+                    'message': 'Clear question feedback before approving this exam.'
+                }, 400
+
+            exam.department_id = exam.department_id or approver.department_id
+            exam.submitted_to_admin = True
+            exam.admin_status = 'approved'
+            exam.submitted_at = exam.submitted_at or datetime.utcnow()
+            exam.is_published = True
+            exam.sent_to_department = False
+            exam.reviewed_by = approver_id
+            exam.reviewed_at = datetime.utcnow()
+            exam.admin_feedback = None
+            exam.rejection_reason = None
+
+            db.session.commit()
+
+            return {
+                'success': True,
+                'message': 'Exam approved successfully',
+                'exam': exam.to_dict()
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error approving department-created exam: {str(e)}", exc_info=True)
+            db.session.rollback()
+            return {
+                'success': False,
+                'message': f'Failed to approve department exam: {str(e)}'
             }, 500
 
     @staticmethod
@@ -425,6 +506,7 @@ class DepartmentService:
             ).all()
             
             subject_ids = [s.subject_id for s in subjects]
+            subject_lookup = {subject.subject_id: subject for subject in subjects}
             
             logger.info(f"Found {len(subject_ids)} subjects for department {department_id}")
             
@@ -440,6 +522,33 @@ class DepartmentService:
             modules = Module.query.filter(
                 Module.subject_id.in_(subject_ids)
             ).order_by(Module.created_at.desc()).all()
+
+            module_ids = [module.module_id for module in modules]
+            question_counts = {}
+            if module_ids:
+                rows = (
+                    db.session.query(
+                        ModuleQuestion.module_id,
+                        ModuleQuestion.difficulty_level,
+                        func.count(ModuleQuestion.question_id).label('cnt')
+                    )
+                    .filter(ModuleQuestion.module_id.in_(module_ids))
+                    .group_by(ModuleQuestion.module_id, ModuleQuestion.difficulty_level)
+                    .all()
+                )
+                for row in rows:
+                    mid = row.module_id
+                    if mid not in question_counts:
+                        question_counts[mid] = {'total': 0, 'easy': 0, 'medium': 0, 'hard': 0}
+                    diff = row.difficulty_level or 'medium'
+                    question_counts[mid][diff] = row.cnt
+                    question_counts[mid]['total'] += row.cnt
+
+            teacher_ids = [module.teacher_id for module in modules if module.teacher_id]
+            teacher_lookup = {
+                teacher.user_id: teacher
+                for teacher in User.query.filter(User.user_id.in_(teacher_ids)).all()
+            } if teacher_ids else {}
             
             logger.info(f"Found {len(modules)} modules for department {department_id}")
             
@@ -448,11 +557,16 @@ class DepartmentService:
             for module in modules:
                 try:
                     # Get subject info
-                    subject = Subject.query.get(module.subject_id)
+                    subject = subject_lookup.get(module.subject_id)
                     subject_name = subject.subject_name if subject else 'Unknown Subject'
+                    department_name = (
+                        subject.department.department_name
+                        if subject and getattr(subject, 'department', None)
+                        else None
+                    )
                     
                     # ✅ FIXED: Use teacher_id (not uploaded_by)
-                    teacher = User.query.get(module.teacher_id)
+                    teacher = teacher_lookup.get(module.teacher_id)
                     if teacher:
                         teacher_name = f"{teacher.first_name} {teacher.last_name}".strip()
                         if not teacher_name:
@@ -465,6 +579,7 @@ class DepartmentService:
                     if module.file_path:
                         # Extract filename from path (handles both / and \)
                         file_name = os.path.basename(module.file_path)
+                    qc = question_counts.get(module.module_id, {'total': 0, 'easy': 0, 'medium': 0, 'hard': 0})
                     
                     module_dict = {
                         'module_id': module.module_id,
@@ -472,16 +587,27 @@ class DepartmentService:
                         'description': module.description,
                         'subject_id': module.subject_id,
                         'subject_name': subject_name,
+                        'department_name': department_name,
+                        'teacher_id': module.teacher_id,
                         'uploaded_by': module.teacher_id,  # Map teacher_id to uploaded_by for frontend
                         'uploaded_by_name': teacher_name,
                         'file_name': file_name,  # Extracted from file_path
                         'file_path': module.file_path,
+                        'file_type': module.file_type if hasattr(module, 'file_type') else None,
                         'file_size': module.file_size if hasattr(module, 'file_size') else None,
                         'teaching_hours': module.teaching_hours if hasattr(module, 'teaching_hours') else None,
+                        'processing_status': module.processing_status if hasattr(module, 'processing_status') else 'pending',
+                        'upload_date': module.upload_date.isoformat() if module.upload_date else None,
                         'created_at': module.created_at.isoformat() if module.created_at else None,
                         
                         # ✅✅✅ CRITICAL FIX: Added is_archived field ✅✅✅
                         'is_archived': module.is_archived if hasattr(module, 'is_archived') else False,
+                        'question_count': qc['total'],
+                        'question_breakdown': {
+                            'easy': qc['easy'],
+                            'medium': qc['medium'],
+                            'hard': qc['hard'],
+                        },
                     }
                     
                     modules_list.append(module_dict)

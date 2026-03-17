@@ -4,12 +4,14 @@ from app.department.service import DepartmentService
 from app.utils.decorators import role_required
 from app.auth.models import User
 from app.exam.models import Exam, ExamQuestion  # ⭐ ADD THIS IMPORT
+from app.exam.service import ExamService
 from app.utils.logger import get_logger  # ⭐ ADD THIS IMPORT
 import json  # ⭐ ADD THIS IMPORT
 
 logger = get_logger(__name__)  # ⭐ ADD THIS
 
 department_bp = Blueprint('departments', __name__)
+DEPARTMENT_ALLOWED_ROLES = {'department', 'department_head', 'admin'}
 
 
 # =========================
@@ -36,7 +38,7 @@ def get_all_departments():
 
 @department_bp.route('/<int:department_id>/dashboard', methods=['GET'])
 @jwt_required()
-@role_required(['department', 'admin'])
+@role_required(['department', 'department_head', 'admin'])
 def get_department_dashboard(department_id):
     current_user_id = get_jwt_identity()
     
@@ -53,7 +55,7 @@ def get_department_dashboard(department_id):
 
 @department_bp.route('/<int:department_id>/exams', methods=['GET'])
 @jwt_required()
-@role_required(['department', 'admin'])
+@role_required(['department', 'department_head', 'admin'])
 def get_department_exams(department_id):
     current_user_id = get_jwt_identity()
     
@@ -74,7 +76,7 @@ def get_department_exams(department_id):
 
 @department_bp.route('/<int:department_id>/teachers', methods=['GET'])
 @jwt_required()
-@role_required(['department', 'admin'])
+@role_required(['department', 'department_head', 'admin'])
 def get_department_teachers_by_id(department_id):
     current_user_id = get_jwt_identity()
     
@@ -94,7 +96,7 @@ def get_department_teachers_by_id(department_id):
 
 @department_bp.route('/<int:department_id>/subjects', methods=['GET'])
 @jwt_required()
-@role_required(['department', 'admin'])
+@role_required(['department', 'department_head', 'admin'])
 def get_department_subjects_by_id(department_id):
     current_user_id = get_jwt_identity()
     
@@ -125,7 +127,7 @@ def get_my_department_dashboard():
 
     logger.debug(f"User {current_user.email} has role: {current_user.role} and department_id: {current_user.department_id}")
 
-    if current_user.role not in ['department', 'admin']:
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
         logger.warning(f"User {current_user.email} does not have required role. Current role: {current_user.role}")
         return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
 
@@ -147,7 +149,7 @@ def get_my_department_exams():
     if not current_user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
 
-    if current_user.role not in ['department', 'admin']:
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
         return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
     
     if not current_user.department_id:
@@ -168,7 +170,7 @@ def get_my_department_exams():
 @role_required(['department', 'department_head', 'admin'])
 def create_department_exam():
     """
-    Create an exam as a department head. The exam is auto-approved on save.
+    Create an exam as a department user. The exam remains editable until approved.
     """
     try:
         data = request.get_json()
@@ -200,7 +202,7 @@ def get_my_department_teachers():
     if not current_user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     
-    if current_user.role not in ['department', 'admin']:
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
         return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
     
     if not current_user.department_id:
@@ -225,7 +227,7 @@ def get_my_department_subjects():
     if not current_user:
         return jsonify({'success': False, 'message': 'User not found'}), 404
     
-    if current_user.role not in ['department', 'admin']:
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
         return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
     
     if not current_user.department_id:
@@ -254,7 +256,7 @@ def get_department_modules():
         if not current_user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
-        if current_user.role not in ['department', 'admin']:
+        if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
             return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
         
         if not current_user.department_id:
@@ -292,7 +294,7 @@ def approve_department_exam(exam_id):
     if not approver:
         return jsonify({'success': False, 'message': 'User not found'}), 404
 
-    if approver.role not in ['department', 'admin']:
+    if (approver.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
         return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
     
     result, status_code = DepartmentService.approve_department_exam(exam_id, data, approver_id)
@@ -322,7 +324,8 @@ def get_exam_preview(exam_id):
             logger.error(f"❌ User {current_user_id} not found")
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
-        if current_user.role not in ['department', 'admin']:
+        current_role = (current_user.role or '').lower()
+        if current_role not in DEPARTMENT_ALLOWED_ROLES:
             logger.error(f"❌ User {current_user_id} has insufficient permissions")
             return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
         
@@ -334,7 +337,7 @@ def get_exam_preview(exam_id):
         
         # ⭐ FIXED: Better department access logic
         # Admins can see all exams
-        if current_user.role != 'admin':
+        if current_role != 'admin':
             # Department heads need to verify access
             if current_user.department_id:
                 # Check if exam belongs to department OR was sent to department
@@ -380,6 +383,7 @@ def get_exam_preview(exam_id):
                 'question_text': q.question_text,
                 'question_type': q.question_type,
                 'difficulty_level': q.difficulty_level,
+                'bloom_level': q.bloom_level if hasattr(q, 'bloom_level') else None,
                 'correct_answer': q.correct_answer,  # ⭐ CRITICAL: Include correct answer!
                 'points': q.points or 1,
                 'feedback': q.feedback if hasattr(q, 'feedback') else None,
@@ -424,6 +428,8 @@ def get_exam_preview(exam_id):
             'exam_id': exam.exam_id,
             'title': exam.title,
             'description': exam.description if hasattr(exam, 'description') else None,
+            'module_id': exam.module_id if hasattr(exam, 'module_id') else None,
+            'module_ids': [em.module_id for em in (exam.exam_modules or [])] or ([exam.module_id] if getattr(exam, 'module_id', None) else []),
             'duration_minutes': exam.duration_minutes if hasattr(exam, 'duration_minutes') else 60,
             'passing_score': exam.passing_score if hasattr(exam, 'passing_score') else 75,
             'total_questions': len(formatted_questions),
@@ -475,7 +481,7 @@ def save_question_feedback(exam_id, question_id):
             logger.error(f"❌ User {current_user_id} not found")
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
-        if current_user.role not in ['department', 'admin']:
+        if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
             logger.error(f"❌ User {current_user_id} has insufficient permissions")
             return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
         
@@ -532,6 +538,133 @@ def save_question_feedback(exam_id, question_id):
         }), 500
 
 
+# ================================================================
+# Department-created Exam Editing Routes
+# ================================================================
+@department_bp.route('/exams/<int:exam_id>/questions/<int:question_id>', methods=['PUT'])
+@jwt_required()
+@role_required(['department', 'department_head', 'admin'])
+def update_created_exam_question(exam_id, question_id):
+    """Update a question for a department-created exam without changing teacher routes."""
+    try:
+        current_user_id = int(get_jwt_identity())
+        current_user = User.query.get(current_user_id)
+
+        if not current_user:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+
+        exam = Exam.query.get(exam_id)
+        if not exam:
+            return jsonify({'success': False, 'message': 'Exam not found'}), 404
+
+        question = ExamQuestion.query.get(question_id)
+        if not question:
+            return jsonify({'success': False, 'message': 'Question not found'}), 404
+
+        if question.exam_id != exam_id:
+            return jsonify({'success': False, 'message': 'Question does not belong to this exam'}), 400
+
+        current_role = (current_user.role or '').lower()
+        if current_role != 'admin':
+            if not current_user.department_id:
+                return jsonify({'success': False, 'message': 'User not assigned to a department'}), 403
+
+            if exam.teacher_id != current_user_id:
+                return jsonify({'success': False, 'message': 'Unauthorized - You do not own this exam'}), 403
+
+            if exam.department_id and exam.department_id != current_user.department_id:
+                return jsonify({'success': False, 'message': 'Unauthorized - Exam not in your department'}), 403
+
+        if (exam.admin_status or '').lower() == 'approved':
+            return jsonify({
+                'success': False,
+                'message': 'Approved exams can no longer be edited'
+            }), 409
+
+        data = request.get_json()
+        if not data:
+            return jsonify({'success': False, 'message': 'No data provided'}), 400
+
+        result, status_code = ExamService.update_question(question_id, data)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error updating department-created exam question: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Failed to update question: {str(e)}'
+        }), 500
+
+
+@department_bp.route('/exams/<int:exam_id>/questions/<int:question_id>', methods=['DELETE'])
+@jwt_required()
+@role_required(['department', 'department_head', 'admin'])
+def delete_created_exam_question(exam_id, question_id):
+    """Delete a question for a department-created exam without changing teacher routes."""
+    try:
+        current_user_id = int(get_jwt_identity())
+        current_user = User.query.get(current_user_id)
+
+        if not current_user:
+            return jsonify({'success': False, 'message': 'User not found'}), 404
+
+        exam = Exam.query.get(exam_id)
+        if not exam:
+            return jsonify({'success': False, 'message': 'Exam not found'}), 404
+
+        question = ExamQuestion.query.get(question_id)
+        if not question:
+            return jsonify({'success': False, 'message': 'Question not found'}), 404
+
+        if question.exam_id != exam_id:
+            return jsonify({'success': False, 'message': 'Question does not belong to this exam'}), 400
+
+        current_role = (current_user.role or '').lower()
+        if current_role != 'admin':
+            if not current_user.department_id:
+                return jsonify({'success': False, 'message': 'User not assigned to a department'}), 403
+
+            if exam.teacher_id != current_user_id:
+                return jsonify({'success': False, 'message': 'Unauthorized - You do not own this exam'}), 403
+
+            if exam.department_id and exam.department_id != current_user.department_id:
+                return jsonify({'success': False, 'message': 'Unauthorized - Exam not in your department'}), 403
+
+        if (exam.admin_status or '').lower() == 'approved':
+            return jsonify({
+                'success': False,
+                'message': 'Approved exams can no longer be edited'
+            }), 409
+
+        result, status_code = ExamService.delete_question(question_id)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error deleting department-created exam question: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Failed to delete question: {str(e)}'
+        }), 500
+
+
+@department_bp.route('/exams/<int:exam_id>/approve-created', methods=['PUT'])
+@jwt_required()
+@role_required(['department', 'department_head', 'admin'])
+def approve_created_exam(exam_id):
+    """Approve a department-created exam after question editing is complete."""
+    try:
+        approver_id = int(get_jwt_identity())
+        result, status_code = DepartmentService.approve_created_exam(exam_id, approver_id)
+        return jsonify(result), status_code
+
+    except Exception as e:
+        logger.error(f"Error approving department-created exam: {str(e)}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'message': f'Failed to approve exam: {str(e)}'
+        }), 500
+
+
 # =====================================================
 # TOS (Table of Specification) for Department Users
 # =====================================================
@@ -552,7 +685,7 @@ def get_exam_tos(exam_id):
         if not current_user:
             return jsonify({'success': False, 'message': 'User not found'}), 404
         
-        if current_user.role not in ['department', 'admin']:
+        if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
             return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
         
         result, status_code = DepartmentService.get_exam_tos(exam_id)

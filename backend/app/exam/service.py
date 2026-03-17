@@ -721,6 +721,8 @@ class ExamService:
                 total_questions=len(exam_result['questions']),
                 passing_score=validated_data['passing_score']
             )
+            if department_id:
+                exam.department_id = department_id
             db.session.add(exam)
             db.session.flush()  # Get exam_id
 
