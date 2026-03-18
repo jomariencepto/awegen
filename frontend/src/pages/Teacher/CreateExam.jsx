@@ -139,6 +139,47 @@ const HEAVY_GENERATION_QUESTION_THRESHOLD = 30;
 const HEAVY_GENERATION_MESSAGE =
   'This module contains a large amount of content. Loading may take a few moments. Please wait.';
 
+const getGeneratedQuestionCount = (responseData) => {
+  if (Array.isArray(responseData?.questions)) return responseData.questions.length;
+
+  const totalFromResponse = Number(responseData?.total_questions);
+  if (Number.isFinite(totalFromResponse) && totalFromResponse >= 0) {
+    return totalFromResponse;
+  }
+
+  return 0;
+};
+
+const buildQuestionShortfallWarning = ({
+  requestedCount,
+  generatedCount,
+  selectedModuleCount,
+}) => {
+  const safeRequested = Math.max(Number(requestedCount) || 0, 0);
+  const safeGenerated = Math.max(Number(generatedCount) || 0, 0);
+  const missingCount = Math.max(safeRequested - safeGenerated, 0);
+
+  if (missingCount <= 0 || safeRequested <= 0) {
+    return null;
+  }
+
+  const moduleLabel = selectedModuleCount === 1 ? 'module' : 'modules';
+
+  return {
+    requestedCount: safeRequested,
+    generatedCount: safeGenerated,
+    missingCount,
+    title: 'Not Enough Questions Generated',
+    summary: `The system generated only ${safeGenerated} of the requested ${safeRequested} questions.`,
+    details: `The ${selectedModuleCount} selected ${moduleLabel} may not contain enough valid content to safely generate the remaining ${missingCount} questions.`,
+    suggestions: [
+      'Add more modules with related content, then generate a new exam.',
+      'Reduce the total requested question count to match the available module coverage.',
+      `If this still works for your class, continue reviewing the ${safeGenerated}-question exam.`,
+    ],
+  };
+};
+
 const summarizeValidationErrors = (errors) => {
   if (!errors || typeof errors !== 'object') return '';
   const entries = [];
@@ -189,6 +230,7 @@ function CreateExam({ mode = 'teacher' }) {
   const [uploadStatus, setUploadStatus] = useState('idle');
   const [currentFileIndex, setCurrentFileIndex] = useState(0);
   const [generationProgress, setGenerationProgress] = useState(0);
+  const [questionShortfallWarning, setQuestionShortfallWarning] = useState(null);
   const generationTimer = useRef(null);
   const previewRef = useRef(null);
   const [status, setStatus] = useState({ api: 'checking', message: 'Checking connection…' });
@@ -625,6 +667,7 @@ function CreateExam({ mode = 'teacher' }) {
     }, 400);
 
     try {
+      setQuestionShortfallWarning(null);
       const moduleCoveragePayload = selectedModules.map((sm) => ({
         module_id: sm.module_id,
         teaching_hours: toCoveragePercent(sm.teachingHours),
@@ -658,13 +701,38 @@ function CreateExam({ mode = 'teacher' }) {
 
       const createEndpoint = isDepartmentMode ? '/departments/exams' : '/exams';
       const response = await api.post(createEndpoint, payload);
-      setGeneratedExam(response.data);
+      const generatedCount = getGeneratedQuestionCount(response.data);
+      const shortfallWarning = buildQuestionShortfallWarning({
+        requestedCount: totalQuestions,
+        generatedCount,
+        selectedModuleCount: selectedModules.length,
+      });
+      const enrichedExam = {
+        ...response.data,
+        requested_question_count: totalQuestions,
+        generated_question_count: generatedCount,
+        question_shortfall: shortfallWarning
+          ? { ...shortfallWarning, hasShortfall: true }
+          : {
+              requestedCount: totalQuestions,
+              generatedCount,
+              missingCount: 0,
+              hasShortfall: false,
+            },
+      };
+
+      setGeneratedExam(enrichedExam);
+      setQuestionShortfallWarning(shortfallWarning);
       setTimeout(() => previewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
-      toast.success(
-        isDepartmentMode
-          ? 'Exam generated successfully! Save it first, then edit questions before approving. Refresh the tab if you need a different exam.'
-          : 'Exam generated successfully! Save it now, or refresh the tab to create a new one.'
-      );
+      if (shortfallWarning) {
+        toast(`Exam generated with ${generatedCount} of ${totalQuestions} questions.`, { icon: 'i' });
+      } else {
+        toast.success(
+          isDepartmentMode
+            ? 'Exam generated successfully! Save it first, then edit questions before approving. Refresh the tab if you need a different exam.'
+            : 'Exam generated successfully! Save it now, or refresh the tab to create a new one.'
+        );
+      }
       setGenerationProgress(100);
     } catch (error) {
       const responseData = error.response?.data;
@@ -675,6 +743,7 @@ function CreateExam({ mode = 'teacher' }) {
         toast.error(responseData?.message || 'Failed to generate exam');
         toast.error('Checklist: Title, Category, Duration, Passing Score, Score Limit, Question Types, Modules, and Module Hours.');
       }
+      setQuestionShortfallWarning(null);
       setGenerationProgress(100);
     } finally {
       if (generationTimer.current) { clearInterval(generationTimer.current); generationTimer.current = null; }
@@ -753,6 +822,46 @@ function CreateExam({ mode = 'teacher' }) {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="create-exam-container">
+      {questionShortfallWarning && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="question-shortfall-title">
+          <div className="modal-content warning-modal">
+            <div className="modal-header">
+              <div className="warning-icon-wrapper">
+                <AlertCircle className="warning-icon" />
+              </div>
+              <div>
+                <h3 id="question-shortfall-title" className="modal-title">
+                  {questionShortfallWarning.title}
+                </h3>
+              </div>
+            </div>
+
+            <div className="modal-body">
+              <p className="warning-modal-text">{questionShortfallWarning.summary}</p>
+              <p className="warning-modal-text">{questionShortfallWarning.details}</p>
+              <p className="warning-modal-text">To reach the target, you can:</p>
+              <ul className="warning-modal-list">
+                {questionShortfallWarning.suggestions.map((suggestion) => (
+                  <li key={suggestion}>{suggestion}</li>
+                ))}
+              </ul>
+              <p className="warning-modal-note">
+                If you want to change the modules or question count, refresh this page and generate again.
+              </p>
+            </div>
+
+            <div className="modal-footer">
+              <Button
+                type="button"
+                className="btn-warning-solid"
+                onClick={() => setQuestionShortfallWarning(null)}
+              >
+                Continue Review
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Loading overlay */}
       {isLoading && (
@@ -1227,6 +1336,19 @@ function CreateExam({ mode = 'teacher' }) {
             </CardHeader>
 
             <CardContent className="results-content">
+              {generatedExam?.question_shortfall?.hasShortfall && (
+                <div className="generation-warning-banner">
+                  <AlertCircle className="generation-warning-banner-icon" />
+                  <div>
+                    <strong>
+                      Only {generatedExam.question_shortfall.generatedCount} of {generatedExam.question_shortfall.requestedCount} questions were generated.
+                    </strong>
+                    <p className="generation-warning-banner-text">
+                      Add more modules or reduce the requested question count if you need to reach the original target.
+                    </p>
+                  </div>
+                </div>
+              )}
               {showTOS ? (
                 <div className="tos-view">
                   <div className="stats-grid">
