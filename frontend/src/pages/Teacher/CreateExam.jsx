@@ -606,21 +606,35 @@ function CreateExam({ mode = 'teacher' }) {
     ));
   };
 
-  // Transform for backend: use selected LOTS/HOTS order and let backend randomize Bloom level.
+  const buildDifficultyDistribution = (difficulty, count) => {
+    const safeCount = Math.max(Number(count) || 0, 0);
+    const mediumCount = Math.floor(safeCount / 2);
+
+    if (difficulty === 'hots') {
+      return {
+        easy: 0,
+        medium: mediumCount,
+        hard: safeCount - mediumCount,
+      };
+    }
+
+    return {
+      easy: safeCount - mediumCount,
+      medium: mediumCount,
+      hard: 0,
+    };
+  };
+
+  // Transform for backend: LOTS -> easy+medium, HOTS -> medium+hard.
   const transformQuestionConfigsForBackend = (configs) => {
     return configs.map(c => {
-      const resolvedDifficulty = c.difficulty === 'hots' ? 'hard' : 'easy';
       return {
       type: c.type,
       count: c.count,
       points: c.points,
       bloom_level: 'random',
       description: (c.description || '').trim(),
-      difficulty_distribution: {
-        easy:   resolvedDifficulty === 'easy'   ? c.count : 0,
-        medium: 0,
-        hard:   resolvedDifficulty === 'hard'   ? c.count : 0,
-      },
+      difficulty_distribution: buildDifficultyDistribution(c.difficulty, c.count),
       };
     });
   };

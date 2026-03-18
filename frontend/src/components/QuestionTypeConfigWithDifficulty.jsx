@@ -404,9 +404,9 @@ function QuestionTypeConfigWithDifficulty({
             </span>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-            {[
-              { d: 'lots', rule: '1 min / question', note: 'Remember · Understand · Apply' },
-              { d: 'hots', rule: '2 min / question', note: 'Analyse · Evaluate · Create' },
+            {[ 
+              { d: 'lots', rule: '1 min / question', note: 'Easy + Medium mix' },
+              { d: 'hots', rule: '2 min / question', note: 'Medium + Hard mix' },
             ].map(({ d, rule, note }) => {
               const cfg = DIFFICULTY_CONFIG[d];
               return (
