@@ -102,6 +102,48 @@ def _convert_image_to_png(source_path, image_id):
         return None, []
 
 
+def _create_square_export_image(source_path, image_id):
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.warning("Pillow is unavailable; skipping square export image transformation.")
+        return None, []
+
+    temp_path = _get_export_image_temp_path(image_id, '.png')
+
+    try:
+        with Image.open(source_path) as pil_image:
+            if pil_image.mode in ('RGBA', 'LA'):
+                base = pil_image.convert('RGBA')
+                background = Image.new('RGBA', base.size, (255, 255, 255, 255))
+                rendered = Image.alpha_composite(background, base).convert('RGB')
+            elif pil_image.mode != 'RGB':
+                rendered = pil_image.convert('RGB')
+            else:
+                rendered = pil_image.copy()
+
+            width, height = rendered.size
+            if width <= 0 or height <= 0:
+                return None, []
+
+            side = max(width, height)
+            square = Image.new('RGB', (side, side), (255, 255, 255))
+            offset = ((side - width) // 2, (side - height) // 2)
+            square.paste(rendered, offset)
+            square.save(temp_path, format='PNG', optimize=True)
+            return temp_path, [temp_path]
+    except Exception as exc:
+        logger.warning(
+            f"Failed to square-pad question image {image_id} for DOCX export from {source_path}: {exc}"
+        )
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        return None, []
+
+
 def _resolve_question_image_for_export(question):
     image_id = question.get('image_id')
     if not image_id:
@@ -125,11 +167,19 @@ def _resolve_question_image_for_export(question):
         )
         return None, []
 
+    cleanup_paths = []
     source_ext = os.path.splitext(source_path)[1].lower()
-    if source_ext in _PASSTHROUGH_IMAGE_EXTENSIONS:
-        return source_path, []
+    prepared_path = source_path
+    if source_ext not in _PASSTHROUGH_IMAGE_EXTENSIONS:
+        prepared_path, cleanup_paths = _convert_image_to_png(source_path, image_id)
+        if not prepared_path:
+            return None, []
 
-    return _convert_image_to_png(source_path, image_id)
+    square_path, square_cleanup = _create_square_export_image(prepared_path, image_id)
+    if square_path:
+        return square_path, cleanup_paths + square_cleanup
+
+    return prepared_path, cleanup_paths
 
 
 class WordExporter:
