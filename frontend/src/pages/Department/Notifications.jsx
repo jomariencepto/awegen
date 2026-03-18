@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
@@ -7,6 +8,7 @@ import { toast } from 'react-hot-toast';
 import api from '../../utils/api';
 
 function Notifications() {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [filter, setFilter] = useState('all'); // 'all', 'unread', 'read'
@@ -35,6 +37,8 @@ function Notifications() {
           message: notif.message,
           status: notif.is_read ? 'read' : 'unread',
           created_at: notif.created_at,
+          target_path: notif.target_path,
+          exam_id: notif.exam_id,
         }));
         
         setNotifications(transformedNotifications);
@@ -71,7 +75,7 @@ function Notifications() {
     }
   };
 
-  const markAsRead = async (id) => {
+  const markAsRead = async (id, { silent = false } = {}) => {
     try {
       console.log('Marking notification as read:', id);
       const response = await api.post(`/notifications/${id}/read`);
@@ -80,13 +84,22 @@ function Notifications() {
         setNotifications(notifications.map(n => 
           n.id === id ? { ...n, status: 'read' } : n
         ));
-        toast.success('Marked as read');
+        if (!silent) {
+          toast.success('Marked as read');
+        }
+        return true;
       } else {
-        toast.error(response.data.message || 'Failed to mark as read');
+        if (!silent) {
+          toast.error(response.data.message || 'Failed to mark as read');
+        }
+        return false;
       }
     } catch (error) {
       console.error('Error marking notification as read:', error);
-      toast.error('Failed to mark notification as read');
+      if (!silent) {
+        toast.error('Failed to mark notification as read');
+      }
+      return false;
     }
   };
 
@@ -112,6 +125,18 @@ function Notifications() {
     if (filter === 'read') return n.status === 'read';
     return true;
   });
+
+  const handleNotificationClick = async (notification) => {
+    if (!notification?.target_path) {
+      return;
+    }
+
+    if (notification.status === 'unread') {
+      await markAsRead(notification.id, { silent: true });
+    }
+
+    navigate(notification.target_path);
+  };
 
   const getIcon = (type) => {
     switch (type) {
@@ -220,8 +245,19 @@ function Notifications() {
             <Card 
               key={notification.id} 
               className={`transition-all hover:shadow-md ${
+                notification.target_path ? 'cursor-pointer' : ''
+              } ${
                 notification.status === 'unread' ? 'border-blue-500 bg-blue-50/30' : ''
               }`}
+              onClick={notification.target_path ? () => handleNotificationClick(notification) : undefined}
+              onKeyDown={notification.target_path ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleNotificationClick(notification);
+                }
+              } : undefined}
+              role={notification.target_path ? 'button' : undefined}
+              tabIndex={notification.target_path ? 0 : undefined}
             >
               <CardContent className="p-6">
                 <div className="flex items-start gap-4">
@@ -251,7 +287,10 @@ function Notifications() {
                           variant="ghost" 
                           size="sm" 
                           className="text-xs h-7"
-                          onClick={() => markAsRead(notification.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            markAsRead(notification.id);
+                          }}
                         >
                           <CheckCircle className="h-3 w-3 mr-1" />
                           Mark as read

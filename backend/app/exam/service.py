@@ -2460,7 +2460,8 @@ class ExamService:
                     'question_type': question.question_type,
                     'difficulty_level': question.difficulty_level,
                     'correct_answer': ExamService._normalize_question_text_for_client(correct_answer),
-                    'points': points
+                    'points': points,
+                    'image_id': question.image_id,
                 }
                 
                 # Add options for multiple choice questions

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../utils/api';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -7,6 +8,7 @@ import { Bell, CheckCircle, FileText, Settings, Loader2, AlertCircle } from 'luc
 import { toast } from 'react-hot-toast';
 
 const Notifications = () => {
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -42,17 +44,23 @@ const Notifications = () => {
     }
   };
 
-  const markAsRead = async (id) => {
+  const markAsRead = async (id, { silent = false } = {}) => {
     try {
       await api.post(`/notifications/${id}/read`);
       setNotifications(notifications.map(notification => 
         notification.id === id ? { ...notification, is_read: true } : notification
       ));
       fetchUnreadCount();
-      toast.success('Marked as read');
+      if (!silent) {
+        toast.success('Marked as read');
+      }
+      return true;
     } catch (err) {
       console.error('Error marking notification as read:', err);
-      toast.error('Failed to mark as read');
+      if (!silent) {
+        toast.error('Failed to mark as read');
+      }
+      return false;
     }
   };
 
@@ -72,6 +80,18 @@ const Notifications = () => {
     fetchNotifications();
     fetchUnreadCount();
   }, [filter]);
+
+  const handleNotificationClick = async (notification) => {
+    if (!notification?.target_path) {
+      return;
+    }
+
+    if (!notification.is_read) {
+      await markAsRead(notification.id, { silent: true });
+    }
+
+    navigate(notification.target_path);
+  };
 
   const getNotificationIcon = (type) => {
     switch(type) {
@@ -176,11 +196,22 @@ const Notifications = () => {
           {notifications.map((notification) => (
             <Card
               key={notification.id}
-              className={`transition-all duration-200 hover:shadow-md cursor-pointer ${
+              className={`transition-all duration-200 hover:shadow-md ${
+                notification.target_path ? 'cursor-pointer' : ''
+              } ${
                 !notification.is_read 
                   ? 'border-l-4 border-l-yellow-500 bg-yellow-50/30' 
                   : 'hover:bg-gray-50'
               }`}
+              onClick={notification.target_path ? () => handleNotificationClick(notification) : undefined}
+              onKeyDown={notification.target_path ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  handleNotificationClick(notification);
+                }
+              } : undefined}
+              role={notification.target_path ? 'button' : undefined}
+              tabIndex={notification.target_path ? 0 : undefined}
             >
               <CardContent className="p-4">
                 <div className="flex items-start gap-4">
@@ -228,7 +259,10 @@ const Notifications = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => markAsRead(notification.id)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        markAsRead(notification.id);
+                      }}
                       className="flex-shrink-0 text-yellow-600 hover:text-yellow-700 hover:bg-yellow-50"
                       title="Mark as read"
                     >

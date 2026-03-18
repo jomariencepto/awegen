@@ -768,6 +768,7 @@ class WordExporter:
         """
         Export answer key - EXACT FORMAT with COMPRESSED SPACING
         """
+        self._temp_export_paths = []
         try:
             logger.info(f"Starting answer key export to {output_path}")
             
@@ -830,6 +831,9 @@ class WordExporter:
             logger.error(f"❌ Answer key error: {str(e)}", exc_info=True)
             return False
 
+        finally:
+            self._cleanup_temp_export_paths()
+
     def _add_answers_only(self, doc, questions):
         """Add answers only, hiding the question text."""
         for i, q in enumerate(questions, 1):
@@ -841,6 +845,7 @@ class WordExporter:
             run.font.size = Pt(11)
             para.paragraph_format.space_after = Pt(4)
             para.paragraph_format.line_spacing = 1.0
+            self._add_question_image(doc, q)
     
     def _add_mcq_with_answers(self, doc, questions):
         """MCQ with answers GREEN/BOLD - COMPRESSED SPACING"""

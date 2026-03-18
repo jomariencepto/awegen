@@ -17,23 +17,53 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _clean_env_value(value):
+    """Trim whitespace and surrounding quotes from env values."""
+    if value is None:
+        return ""
+
+    cleaned = str(value).strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        cleaned = cleaned[1:-1].strip()
+    return cleaned
+
+
 class EmailService:
     """Email service for sending OTPs and notifications"""
     
     def __init__(self):
         # Email configuration from environment variables
-        self.smtp_server = os.environ.get('SMTP_SERVER', 'smtp.gmail.com')
-        self.smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-        self.smtp_username = os.environ.get('SMTP_USERNAME', '')
-        self.smtp_password = os.environ.get('SMTP_PASSWORD', '')
-        self.from_email = os.environ.get('FROM_EMAIL', self.smtp_username)
-        self.from_name = os.environ.get('FROM_NAME', 'AWEGen System')
+        self.smtp_server = _clean_env_value(os.environ.get('SMTP_SERVER', 'smtp.gmail.com')) or 'smtp.gmail.com'
+
+        smtp_port_raw = _clean_env_value(os.environ.get('SMTP_PORT', '587')) or '587'
+        try:
+            self.smtp_port = int(smtp_port_raw)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid SMTP_PORT value '{smtp_port_raw}', defaulting to 587")
+            self.smtp_port = 587
+
+        self.smtp_username = _clean_env_value(os.environ.get('SMTP_USERNAME', ''))
+        self.smtp_password = self._normalize_smtp_password(
+            _clean_env_value(os.environ.get('SMTP_PASSWORD', ''))
+        )
+        self.from_email = _clean_env_value(os.environ.get('FROM_EMAIL', self.smtp_username)) or self.smtp_username
+        self.from_name = _clean_env_value(os.environ.get('FROM_NAME', 'AWEGen System')) or 'AWEGen System'
         
         # Email enabled flag
         self.email_enabled = bool(self.smtp_username and self.smtp_password)
         
         if not self.email_enabled:
             logger.warning("Email not configured - OTPs will only be logged")
+
+    def _normalize_smtp_password(self, password):
+        """Normalize Gmail app passwords copied with visual separator spaces."""
+        if not password:
+            return ''
+
+        if 'gmail' in self.smtp_server.lower():
+            return ''.join(password.split())
+
+        return password
     
     def send_email(self, to_email, subject, body_html, body_text=None):
         """
@@ -77,6 +107,13 @@ class EmailService:
             logger.info(f"✅ Email sent successfully to {to_email}")
             return True
             
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
+            logger.error(
+                "SMTP authentication failed. Check SMTP_USERNAME/SMTP_PASSWORD. "
+                "If using Gmail, use a valid 16-character App Password."
+            )
+            return False
         except Exception as e:
             logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
             return False
