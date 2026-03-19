@@ -726,7 +726,7 @@ function ExamReview() {
           <CardHeader>
             <CardTitle>Review Exam</CardTitle>
             <CardDescription>
-              Provide feedback and approve, reject, or request revision for this exam
+              Provide feedback and approve or request revision for this exam
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -800,13 +800,6 @@ function ExamReview() {
                 className="border-yellow-500 text-yellow-700 hover:bg-yellow-50"
               >
                 {isSubmitting ? 'Submitting...' : '↻ Request Revision'}
-              </Button>
-              <Button
-                onClick={() => handleReviewSubmit('reject')}
-                disabled={isSubmitting || feedbackLocked}
-                variant="destructive"
-              >
-                {isSubmitting ? 'Submitting...' : '✗ Reject Exam'}
               </Button>
             </div>
           </CardContent>
