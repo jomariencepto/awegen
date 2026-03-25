@@ -12,8 +12,7 @@ const DepartmentSidebar = lazy(() => import('./components/Sidebar/DepartmentSide
 const AdminSidebar = lazy(() => import('./components/Sidebar/AdminSidebar'));
 
 const Login = lazy(() => import('./pages/Auth/Login'));
-const SignupTeacher = lazy(() => import('./pages/Auth/SignupTeacher'));
-const SignupDepartment = lazy(() => import('./pages/Auth/SignupDepartment'));
+const AdminManagedSignupNotice = lazy(() => import('./pages/Auth/AdminManagedSignupNotice'));
 const SignupAdmin = lazy(() => import('./pages/Auth/SignupAdmin'));
 const ForgotPassword = lazy(() => import('./pages/Auth/ForgotPassword'));
 
@@ -45,6 +44,7 @@ const TOSReports = lazy(() => import('./pages/Department/TOSReports'));
 const DepartmentNotifications = lazy(() => import('./pages/Department/Notifications'));
 const SpecialExams = lazy(() => import('./pages/Department/SpecialExams'));
 const ExamsDownload = lazy(() => import('./pages/Department/ExamsDownload'));
+const DepartmentExamCompliance = lazy(() => import('./pages/Department/ExamCompliance'));
 
 const AdminDashboard = lazy(() => import('./pages/Admin/Dashboard'));
 const SystemReports = lazy(() => import('./pages/Admin/SystemReports'));
@@ -239,8 +239,18 @@ function App() {
             <Route path="/" element={<Navigate to="/auth/login" replace />} />
 
             <Route path="/auth/login" element={renderLazyElement(Login)} />
-            <Route path="/auth/signup" element={renderLazyElement(SignupTeacher)} />
-            <Route path="/auth/signup-department" element={renderLazyElement(SignupDepartment)} />
+            <Route
+              path="/auth/signup"
+              element={renderLazyElement(AdminManagedSignupNotice, {
+                accountLabel: 'teacher',
+              })}
+            />
+            <Route
+              path="/auth/signup-department"
+              element={renderLazyElement(AdminManagedSignupNotice, {
+                accountLabel: 'department-head',
+              })}
+            />
             <Route path="/auth/signup-admin" element={renderLazyElement(SignupAdmin)} />
             <Route path="/auth/forgot-password" element={renderLazyElement(ForgotPassword)} />
 
@@ -288,6 +298,7 @@ function App() {
               <Route path="exams-download" element={renderLazyElement(ExamsDownload)} />
               <Route path="modules-bank" element={renderLazyElement(ModulesBank)} />
               <Route path="manage-users" element={renderLazyElement(ManageUsers)} />
+              <Route path="exam-compliance" element={renderLazyElement(DepartmentExamCompliance)} />
               <Route path="settings" element={renderLazyElement(Settings)} />
               <Route path="exam-review/:examId" element={renderLazyElement(ExamReview)} />
               <Route path="review-questions/:examId" element={renderLazyElement(DepartmentReviewQuestions)} />

@@ -35,3 +35,10 @@ class UserUpdateSchema(Schema):
 class UserApprovalSchema(Schema):
     user_id = fields.Int(required=True)
     is_approved = fields.Bool(required=True)
+
+
+class CurrentUserProfileUpdateSchema(Schema):
+    first_name = fields.Str(required=True, validate=validate.Length(min=1, max=50))
+    last_name = fields.Str(required=True, validate=validate.Length(min=1, max=50))
+    email = fields.Email(required=True)
+    current_password = fields.Str(load_default='')

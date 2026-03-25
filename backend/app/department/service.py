@@ -1,12 +1,13 @@
 from app.database import db
 from app.auth.models import User, Role
 from app.users.models import Department, Subject
-from app.exam.models import Exam, ExamQuestion
+from app.exam.models import Exam, ExamQuestion, ExamCategory, ExamModule
 from app.exam.service import ExamService
 from app.module_processor.models import Module, ModuleQuestion
 from app.notifications.models import Notification
 from app.utils.logger import get_logger
 from sqlalchemy import and_, or_, func
+from sqlalchemy.orm import joinedload
 import json
 import os
 
@@ -14,7 +15,119 @@ logger = get_logger(__name__)
 
 
 class DepartmentService:
-    
+    EXAM_FOLLOW_UP_STATUS_META = {
+        'approved': {'label': 'Approved', 'variant': 'success', 'priority': 6},
+        'submitted': {'label': 'Submitted', 'variant': 'default', 'priority': 5},
+        'revision_required': {'label': 'Needs Revision', 'variant': 'warning', 'priority': 4},
+        'rejected': {'label': 'Rejected', 'variant': 'destructive', 'priority': 3},
+        'draft': {'label': 'Draft', 'variant': 'secondary', 'priority': 2},
+        'missing': {'label': 'Missing', 'variant': 'outline', 'priority': 1},
+    }
+
+    TEACHER_COMPLIANCE_STATUS_META = {
+        'completed': {'label': 'Completed', 'variant': 'success'},
+        'in_progress': {'label': 'In Progress', 'variant': 'warning'},
+        'missing': {'label': 'Missing', 'variant': 'destructive'},
+    }
+
+    @staticmethod
+    def _get_exam_follow_up_status(exam):
+        normalized_status = str(getattr(exam, 'admin_status', '') or '').strip().lower()
+
+        if normalized_status == 'approved':
+            return 'approved'
+        if (
+            getattr(exam, 'submitted_to_admin', False)
+            or getattr(exam, 'sent_to_department', False)
+            or normalized_status == 'pending'
+        ):
+            return 'submitted'
+        if normalized_status == 'revision_required':
+            return 'revision_required'
+        if normalized_status == 'rejected':
+            return 'rejected'
+        return 'draft'
+
+    @staticmethod
+    def _build_teacher_follow_up_message(category_name, department_name, teacher_status, exam_title=None):
+        safe_category = (category_name or 'selected term').strip()
+        safe_department = (department_name or 'your department').strip()
+        safe_exam_title = (exam_title or '').strip()
+
+        if teacher_status == 'missing':
+            return (
+                f'Reminder: you still need to create your {safe_category} exam for {safe_department}.'
+            )
+        if teacher_status == 'in_progress':
+            if safe_exam_title:
+                return (
+                    f'Reminder: your {safe_category} exam "{safe_exam_title}" for {safe_department} '
+                    f'is still in progress. Please finish or submit it.'
+                )
+            return (
+                f'Reminder: your {safe_category} exam for {safe_department} is still in progress. '
+                f'Please finish or submit it.'
+            )
+        return (
+            f'Reminder: please check your {safe_category} exam requirements for {safe_department}.'
+        )
+
+    @staticmethod
+    def _serialize_teacher_compliance_summary(teacher, selected_exam, category_name):
+        exam_status = 'missing'
+        exam_status_label = DepartmentService.EXAM_FOLLOW_UP_STATUS_META['missing']['label']
+        exam_status_variant = DepartmentService.EXAM_FOLLOW_UP_STATUS_META['missing']['variant']
+        exam_id = None
+        exam_title = None
+        latest_activity_at = None
+
+        if selected_exam:
+            exam_status = selected_exam.get('status', 'missing')
+            status_meta = DepartmentService.EXAM_FOLLOW_UP_STATUS_META.get(
+                exam_status,
+                DepartmentService.EXAM_FOLLOW_UP_STATUS_META['missing'],
+            )
+            exam_status_label = status_meta['label']
+            exam_status_variant = status_meta['variant']
+            exam_id = selected_exam.get('exam_id')
+            exam_title = selected_exam.get('exam_title')
+            latest_activity_at = selected_exam.get('latest_activity_at')
+
+        if exam_status in {'approved', 'submitted'}:
+            teacher_status = 'completed'
+        elif exam_status == 'missing':
+            teacher_status = 'missing'
+        else:
+            teacher_status = 'in_progress'
+
+        teacher_status_meta = DepartmentService.TEACHER_COMPLIANCE_STATUS_META[teacher_status]
+        teacher_data = teacher.to_dict()
+
+        return {
+            **teacher_data,
+            'category_name': category_name,
+            'teacher_status': teacher_status,
+            'teacher_status_label': teacher_status_meta['label'],
+            'teacher_status_variant': teacher_status_meta['variant'],
+            'expected_exam_count': 1,
+            'created_exam_count': 0 if exam_status == 'missing' else 1,
+            'submitted_exam_count': 1 if exam_status in {'approved', 'submitted'} else 0,
+            'incomplete_exam_count': 0 if exam_status in {'approved', 'submitted'} else 1,
+            'needs_follow_up': teacher_status in {'missing', 'in_progress'},
+            'exam_status': exam_status,
+            'exam_status_label': exam_status_label,
+            'exam_status_variant': exam_status_variant,
+            'exam_id': exam_id,
+            'exam_title': exam_title,
+            'latest_activity_at': latest_activity_at,
+            'follow_up_message': DepartmentService._build_teacher_follow_up_message(
+                category_name,
+                teacher_data.get('department_name'),
+                teacher_status,
+                exam_title,
+            ),
+        }
+
     @staticmethod
     def get_all_departments():
         """Get all departments - needed for dropdowns in frontend"""
@@ -349,6 +462,296 @@ class DepartmentService:
             }, 500
     
     @staticmethod
+    def get_department_exam_compliance(department_id, category_id):
+        """Get per-teacher exam completion data for a selected exam category."""
+        try:
+            logger.info(
+                f"Fetching exam compliance for department_id={department_id}, category_id={category_id}"
+            )
+
+            category = ExamCategory.query.get(category_id)
+            if not category:
+                return {'success': False, 'message': 'Selected term/category not found'}, 404
+
+            teacher_role = Role.query.filter_by(role_name='teacher').first()
+            department = Department.query.get(department_id)
+            department_name = department.department_name if department else None
+
+            if not teacher_role:
+                return {
+                    'success': True,
+                    'category': category.to_dict(),
+                    'department_id': department_id,
+                    'department_name': department_name,
+                    'summary': {
+                        'total_teachers': 0,
+                        'expected_teachers': 0,
+                        'completed_teachers': 0,
+                        'in_progress_teachers': 0,
+                        'missing_teachers': 0,
+                        'teachers_needing_follow_up': 0,
+                        'total_expected_exams': 0,
+                        'created_exams': 0,
+                        'submitted_exams': 0,
+                        'incomplete_exams': 0,
+                    },
+                    'teachers': [],
+                }, 200
+
+            teachers = (
+                User.query
+                .filter(
+                    User.role_id == teacher_role.role_id,
+                    User.department_id == department_id,
+                    User.is_active.is_(True),
+                    User.is_approved.is_(True),
+                )
+                .order_by(User.created_at.desc(), User.user_id.desc())
+                .all()
+            )
+
+            teacher_ids = [teacher.user_id for teacher in teachers]
+            if not teacher_ids:
+                return {
+                    'success': True,
+                    'category': category.to_dict(),
+                    'department_id': department_id,
+                    'department_name': department_name,
+                    'summary': {
+                        'total_teachers': 0,
+                        'expected_teachers': 0,
+                        'completed_teachers': 0,
+                        'in_progress_teachers': 0,
+                        'missing_teachers': 0,
+                        'teachers_needing_follow_up': 0,
+                        'total_expected_exams': 0,
+                        'created_exams': 0,
+                        'submitted_exams': 0,
+                        'incomplete_exams': 0,
+                    },
+                    'teachers': [],
+                }, 200
+
+            exams = (
+                Exam.query
+                .options(
+                    joinedload(Exam.module).joinedload(Module.subject).joinedload(Subject.department),
+                    joinedload(Exam.exam_modules)
+                    .joinedload(ExamModule.module)
+                    .joinedload(Module.subject)
+                    .joinedload(Subject.department),
+                )
+                .filter(
+                    Exam.teacher_id.in_(teacher_ids),
+                    Exam.category_id == category_id,
+                )
+                .all()
+            )
+
+            best_exam_by_teacher = {teacher_id: None for teacher_id in teacher_ids}
+            for exam in exams:
+                status_key = DepartmentService._get_exam_follow_up_status(exam)
+                status_meta = DepartmentService.EXAM_FOLLOW_UP_STATUS_META[status_key]
+                activity_iso = (
+                    (exam.updated_at or exam.created_at).isoformat()
+                    if (exam.updated_at or exam.created_at)
+                    else None
+                )
+                current_entry = {
+                    'status': status_key,
+                    'priority': status_meta['priority'],
+                    'exam_id': exam.exam_id,
+                    'exam_title': exam.title,
+                    'latest_activity_at': activity_iso,
+                }
+                existing_entry = best_exam_by_teacher.get(exam.teacher_id)
+
+                should_replace = existing_entry is None
+                if existing_entry is not None:
+                    if current_entry['priority'] > existing_entry['priority']:
+                        should_replace = True
+                    elif current_entry['priority'] == existing_entry['priority']:
+                        should_replace = (
+                            current_entry['latest_activity_at'] or ''
+                        ) > (
+                            existing_entry.get('latest_activity_at') or ''
+                        )
+
+                if should_replace:
+                    best_exam_by_teacher[exam.teacher_id] = current_entry
+
+            teacher_summaries = []
+            summary = {
+                'total_teachers': len(teachers),
+                'expected_teachers': len(teachers),
+                'completed_teachers': 0,
+                'in_progress_teachers': 0,
+                'missing_teachers': 0,
+                'teachers_needing_follow_up': 0,
+                'total_expected_exams': len(teachers),
+                'created_exams': 0,
+                'submitted_exams': 0,
+                'incomplete_exams': 0,
+            }
+
+            for teacher in teachers:
+                teacher_summary = DepartmentService._serialize_teacher_compliance_summary(
+                    teacher,
+                    best_exam_by_teacher.get(teacher.user_id),
+                    category.category_name,
+                )
+                teacher_summaries.append(teacher_summary)
+
+                if teacher_summary['teacher_status'] == 'completed':
+                    summary['completed_teachers'] += 1
+                elif teacher_summary['teacher_status'] == 'in_progress':
+                    summary['in_progress_teachers'] += 1
+                elif teacher_summary['teacher_status'] == 'missing':
+                    summary['missing_teachers'] += 1
+
+                if teacher_summary['needs_follow_up']:
+                    summary['teachers_needing_follow_up'] += 1
+
+                summary['created_exams'] += teacher_summary['created_exam_count']
+                summary['submitted_exams'] += teacher_summary['submitted_exam_count']
+                summary['incomplete_exams'] += teacher_summary['incomplete_exam_count']
+
+            return {
+                'success': True,
+                'category': category.to_dict(),
+                'department_id': department_id,
+                'department_name': department_name,
+                'summary': summary,
+                'teachers': teacher_summaries,
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting department exam compliance: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'message': 'Failed to get department exam compliance',
+            }, 500
+
+    @staticmethod
+    def send_department_exam_follow_up_reminders(
+        department_id,
+        category_id,
+        sender_id,
+        teacher_ids=None,
+    ):
+        """Send in-app and email reminders to teachers with incomplete exam requirements."""
+        try:
+            result, status_code = DepartmentService.get_department_exam_compliance(
+                department_id,
+                category_id,
+            )
+            if status_code != 200 or not result.get('success'):
+                return result, status_code
+
+            selected_category = result.get('category') or {}
+            category_name = selected_category.get('category_name') or 'selected term'
+            department_name = result.get('department_name')
+            requested_teacher_ids = sorted({
+                int(teacher_id)
+                for teacher_id in (teacher_ids or [])
+                if teacher_id is not None
+            })
+            requested_teacher_id_set = set(requested_teacher_ids)
+
+            teachers_needing_follow_up = [
+                teacher for teacher in (result.get('teachers') or [])
+                if teacher.get('needs_follow_up')
+                and (
+                    not requested_teacher_id_set
+                    or int(teacher.get('user_id')) in requested_teacher_id_set
+                )
+            ]
+
+            if not teachers_needing_follow_up:
+                return {
+                    'success': True,
+                    'message': 'No teachers need follow-up reminders for the selected term.',
+                    'category': selected_category,
+                    'notified_count': 0,
+                    'emailed_count': 0,
+                    'teachers': [],
+                }, 200
+
+            notifications = []
+            for teacher in teachers_needing_follow_up:
+                notifications.append(Notification(
+                    user_id=int(teacher['user_id']),
+                    type='exam_follow_up',
+                    text=teacher.get('follow_up_message') or DepartmentService._build_teacher_follow_up_message(
+                        category_name,
+                        department_name,
+                        teacher.get('teacher_status'),
+                        teacher.get('exam_title'),
+                    ),
+                ))
+
+            db.session.add_all(notifications)
+            db.session.commit()
+
+            emailed_count = 0
+            teacher_results = []
+            from app.utils.email_service import send_exam_follow_up_email
+
+            for teacher in teachers_needing_follow_up:
+                teacher_email = (teacher.get('email') or '').strip()
+                email_sent = False
+
+                if teacher_email:
+                    try:
+                        full_name = (
+                            f"{(teacher.get('first_name') or '').strip()} "
+                            f"{(teacher.get('last_name') or '').strip()}"
+                        ).strip()
+                        email_sent = bool(send_exam_follow_up_email(
+                            to_email=teacher_email,
+                            full_name=full_name,
+                            category_name=category_name,
+                            department_name=department_name,
+                            teacher_status=teacher.get('teacher_status'),
+                            exam_title=teacher.get('exam_title'),
+                        ))
+                    except Exception as email_error:
+                        email_sent = False
+                        logger.error(
+                            f"Failed to send exam follow-up email to user_id={teacher.get('user_id')}: "
+                            f"{str(email_error)}"
+                        )
+
+                if email_sent:
+                    emailed_count += 1
+
+                teacher_results.append({
+                    'user_id': teacher.get('user_id'),
+                    'email': teacher_email or None,
+                    'email_sent': email_sent,
+                    'incomplete_exam_count': teacher.get('incomplete_exam_count', 0),
+                })
+
+            teacher_count = len(teachers_needing_follow_up)
+            teacher_label = 'teacher' if teacher_count == 1 else 'teachers'
+            return {
+                'success': True,
+                'message': f'Sent follow-up reminders to {teacher_count} {teacher_label}.',
+                'category': selected_category,
+                'notified_count': teacher_count,
+                'emailed_count': emailed_count,
+                'teachers': teacher_results,
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error sending exam follow-up reminders: {str(e)}", exc_info=True)
+            db.session.rollback()
+            return {
+                'success': False,
+                'message': 'Failed to send exam follow-up reminders',
+            }, 500
+
+    @staticmethod
     def get_department_exams(department_id, status=None, page=1, per_page=10):
         """
         Get exams for a department.
@@ -488,7 +891,7 @@ class DepartmentService:
             else:
                 query = query.filter(User.department_id == department_id)
 
-            query = query.order_by(User.last_name, User.first_name)
+            query = query.order_by(User.created_at.desc(), User.user_id.desc())
             
             teachers = query.paginate(
                 page=page,
@@ -867,16 +1270,27 @@ class DepartmentService:
                         read=False,
                     )
                 )
-             
+              
             db.session.commit()
-            
+            email_feedback = feedback or exam.admin_feedback or exam.rejection_reason or ''
+            email_notification_sent = ExamService._send_teacher_exam_decision_email(
+                exam=exam,
+                status=action,
+                feedback=email_feedback,
+                reviewer_label='department'
+            )
+             
             logger.info(f"Exam {exam_id} {action} by approver {approver_id}")
-            
-            return {
+             
+            response = {
                 'success': True,
                 'message': f'Exam {action} successfully',
                 'exam': exam.to_dict()
-            }, 200
+            }
+            if email_notification_sent is not None:
+                response['email_notification_sent'] = email_notification_sent
+
+            return response, 200
             
         except Exception as e:
             db.session.rollback()

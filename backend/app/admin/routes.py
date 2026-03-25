@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.admin.service import AdminService
 from app.utils.decorators import role_required
 
@@ -21,7 +21,41 @@ def get_all_users():
     """Get all users for Admin Dashboard"""
     page = request.args.get("page", 1, type=int)
     per_page = request.args.get("per_page", 10, type=int)
-    result, status_code = AdminService.get_all_users(page, per_page)
+    search = request.args.get("search", "", type=str)
+    result, status_code = AdminService.get_all_users(page, per_page, search)
+    return jsonify(result), status_code
+
+
+@admin_bp.route('/users', methods=['POST'])
+@jwt_required()
+@role_required(['admin'])
+def create_user():
+    """Create a teacher or department-head account from the admin panel."""
+    data = request.get_json() or {}
+    admin_id = int(get_jwt_identity())
+    result, status_code = AdminService.create_user_account(data, created_by=admin_id)
+    return jsonify(result), status_code
+
+
+@admin_bp.route('/teachers/<int:teacher_id>/subjects', methods=['GET'])
+@jwt_required()
+@role_required(['admin'])
+def get_teacher_subjects(teacher_id):
+    result, status_code = AdminService.get_teacher_subject_assignments(teacher_id)
+    return jsonify(result), status_code
+
+
+@admin_bp.route('/teachers/<int:teacher_id>/subjects', methods=['PUT'])
+@jwt_required()
+@role_required(['admin'])
+def update_teacher_subjects(teacher_id):
+    data = request.get_json() or {}
+    admin_id = int(get_jwt_identity())
+    result, status_code = AdminService.update_teacher_subject_assignments(
+        teacher_id,
+        data,
+        assigned_by=admin_id,
+    )
     return jsonify(result), status_code
 
 

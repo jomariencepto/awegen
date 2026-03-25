@@ -84,6 +84,103 @@ class ExamService:
             return False
 
     @staticmethod
+    def _get_exam_creator(user_id):
+        if not user_id:
+            return None
+        return User.query.get(int(user_id))
+
+    @staticmethod
+    def _validate_modules_for_exam_creation(module_ids, creator, department_id=None):
+        from app.module_processor.models import Module
+        from app.users.service import UserService
+
+        normalized_module_ids = []
+        for module_id in module_ids:
+            try:
+                module_id = int(module_id)
+            except (TypeError, ValueError):
+                return None, ({
+                    'success': False,
+                    'message': 'Invalid module selected'
+                }, 400)
+
+            if module_id not in normalized_module_ids:
+                normalized_module_ids.append(module_id)
+
+        if not normalized_module_ids:
+            return None, ({
+                'success': False,
+                'message': 'At least one module is required'
+            }, 400)
+
+        modules = Module.query.filter(Module.module_id.in_(normalized_module_ids)).all()
+        if len(modules) != len(normalized_module_ids):
+            found_ids = {module.module_id for module in modules}
+            missing_ids = [str(module_id) for module_id in normalized_module_ids if module_id not in found_ids]
+            return None, ({
+                'success': False,
+                'message': f'Module not found: {", ".join(missing_ids)}'
+            }, 404)
+
+        modules_by_id = {module.module_id: module for module in modules}
+        ordered_modules = [modules_by_id[module_id] for module_id in normalized_module_ids]
+
+        creator_role = (creator.role or '').strip().lower() if creator else ''
+        if creator_role == 'teacher':
+            if not creator.department_id:
+                return None, ({
+                    'success': False,
+                    'message': 'Teacher account is not assigned to a department'
+                }, 400)
+
+            if not UserService._ensure_teacher_subject_assignments_table():
+                return None, ({
+                    'success': False,
+                    'message': 'Failed to verify teacher subject assignments'
+                }, 500)
+
+            assigned_subject_ids = UserService.get_teacher_assigned_subject_ids(
+                creator.user_id,
+                ensure_table=False,
+            ) or set()
+            if not assigned_subject_ids:
+                return None, ({
+                    'success': False,
+                    'message': 'No subjects are assigned to this teacher yet. Please contact the admin.'
+                }, 403)
+
+            for module in ordered_modules:
+                if module.teacher_id != creator.user_id:
+                    return None, ({
+                        'success': False,
+                        'message': 'You can only create exams from your own modules'
+                    }, 403)
+
+                if int(module.subject_id) not in assigned_subject_ids:
+                    return None, ({
+                        'success': False,
+                        'message': 'Selected module uses a subject that is not assigned to this teacher'
+                    }, 403)
+
+        elif department_id:
+            try:
+                expected_department_id = int(department_id)
+            except (TypeError, ValueError):
+                expected_department_id = None
+
+            if expected_department_id:
+                for module in ordered_modules:
+                    subject = module.subject
+                    module_department_id = subject.department_id if subject else None
+                    if module_department_id != expected_department_id:
+                        return None, ({
+                            'success': False,
+                            'message': 'Selected module is outside the target department'
+                        }, 403)
+
+        return ordered_modules, None
+
+    @staticmethod
     def _serialize_exam_with_special_state(exam, special_exam_ids=None):
         """Return a stable exam payload with special-exam flags expected by the UI."""
         exam_dict = exam.to_dict()
@@ -584,6 +681,57 @@ class ExamService:
             return 0
 
     @staticmethod
+    def _normalize_exam_decision_status(status):
+        normalized_status = str(status or '').strip().lower()
+        if normalized_status == 'approve':
+            return 'approved'
+        if normalized_status == 'reject':
+            return 'rejected'
+        return normalized_status
+
+    @staticmethod
+    def _send_teacher_exam_decision_email(exam, status, feedback=None, reviewer_label='admin'):
+        """Send an email to the teacher when an exam decision is recorded."""
+        try:
+            if not exam or not exam.teacher_id:
+                return None
+
+            teacher = exam.teacher or User.query.get(exam.teacher_id)
+            if not teacher or not teacher.email:
+                return None
+
+            normalized_status = ExamService._normalize_exam_decision_status(status)
+            feedback_text = str(feedback or '').strip()
+            if not feedback_text:
+                if normalized_status == 'rejected':
+                    feedback_text = str(exam.rejection_reason or '').strip()
+                else:
+                    feedback_text = str(exam.admin_feedback or '').strip()
+
+            full_name = f"{(teacher.first_name or '').strip()} {(teacher.last_name or '').strip()}".strip()
+            if not full_name:
+                full_name = teacher.email
+
+            from app.utils.email_service import send_exam_decision_email
+
+            return bool(
+                send_exam_decision_email(
+                    to_email=teacher.email,
+                    full_name=full_name,
+                    exam_title=exam.title,
+                    decision_status=normalized_status,
+                    feedback=feedback_text,
+                    reviewer_label=reviewer_label,
+                )
+            )
+        except Exception as exc:
+            logger.error(
+                f"Failed to send exam decision email for exam {getattr(exam, 'exam_id', 'unknown')}: {exc}",
+                exc_info=True,
+            )
+            return False
+
+    @staticmethod
     def get_all_exams(page=1, per_page=10, status=None):
         """Get all exams with pagination (Admin Dashboard), optional admin_status filter"""
         try:
@@ -783,6 +931,20 @@ class ExamService:
             
             module_coverage_mode = validated_data.get('module_coverage_mode', 'hours')
             module_ids = [m['module_id'] for m in validated_data['modules']]
+            creator = ExamService._get_exam_creator(teacher_id)
+
+            validated_modules, validation_error = ExamService._validate_modules_for_exam_creation(
+                module_ids,
+                creator,
+                department_id=department_id,
+            )
+            if validation_error:
+                return validation_error
+
+            validated_modules_by_id = {
+                int(module.module_id): module
+                for module in (validated_modules or [])
+            }
 
             provided_targets = validated_data.get('module_question_targets') or []
             if provided_targets:
@@ -801,6 +963,11 @@ class ExamService:
             for module_info in validated_data['modules']:
                 module_id = module_info['module_id']
                 teaching_hours = module_info['teaching_hours']
+                if int(module_id) not in validated_modules_by_id:
+                    return {
+                        'success': False,
+                        'message': f'Module {module_id} is not available for this exam'
+                    }, 400
                 
                 module_content_result, _ = SavedModuleService.get_module_content(module_id)
                 if not module_content_result['success']:
@@ -1430,7 +1597,27 @@ class ExamService:
             # Update exam status
             logger.info(f"🔵 Updating exam status to pending")
             target_department_id = validated_data.get('department_id')
-            if target_department_id is not None:
+            exam_creator = exam.teacher or ExamService._get_exam_creator(exam.teacher_id)
+            exam_creator_role = (exam_creator.role or '').strip().lower() if exam_creator else ''
+
+            if exam_creator_role == 'teacher':
+                if not exam_creator or not exam_creator.department_id:
+                    return {
+                        'success': False,
+                        'message': 'Teacher account is not assigned to a department'
+                    }, 400
+
+                if (
+                    target_department_id is not None
+                    and int(target_department_id) != int(exam_creator.department_id)
+                ):
+                    return {
+                        'success': False,
+                        'message': 'Teachers can only submit exams to their own department'
+                    }, 403
+
+                exam.department_id = int(exam_creator.department_id)
+            elif target_department_id is not None:
                 try:
                     from app.users.models import Department
                     target_department_id = int(target_department_id)
@@ -1447,6 +1634,8 @@ class ExamService:
                         'success': False,
                         'message': 'Invalid department selected for this exam'
                     }, 400
+            elif exam_creator and exam_creator.department_id and exam.department_id is None:
+                exam.department_id = int(exam_creator.department_id)
 
             exam.submitted_to_admin = True
             exam.admin_status = 'pending'
@@ -1523,14 +1712,24 @@ class ExamService:
             )
             if notified_count:
                 logger.info(f"Queued {notified_count} teacher decision notification(s) for exam {exam_id}")
-            
+             
             db.session.commit()
-            
-            return {
+            email_notification_sent = ExamService._send_teacher_exam_decision_email(
+                exam=exam,
+                status=status,
+                feedback=feedback,
+                reviewer_label='admin'
+            )
+             
+            response = {
                 'success': True,
                 'message': f'Exam {status} successfully',
                 'exam': exam.to_dict()
-            }, 200
+            }
+            if email_notification_sent is not None:
+                response['email_notification_sent'] = email_notification_sent
+
+            return response, 200
             
         except Exception as e:
             logger.error(f"Error approving exam: {str(e)}")
@@ -1570,7 +1769,10 @@ class ExamService:
             exam = Exam.query.get(exam_id)
             if not exam:
                 return {'success': False, 'message': 'Exam not found'}, 404
-            
+
+            sender = User.query.get(sender_id)
+            sender_role = (sender.role or '').lower() if sender else ''
+
             # Fallback: derive department from exam.module -> subject.department
             if not department_id:
                 module = exam.module  # relationship
@@ -1584,10 +1786,23 @@ class ExamService:
             
             # Permission: admin can send any; teacher can only send their own exam
             if exam.teacher_id != sender_id:
-                sender = User.query.get(sender_id)
-                sender_role = (sender.role or '').lower() if sender else ''
                 if sender_role not in ('admin', 'department_head'):
                     return {'success': False, 'message': 'Unauthorized to send this exam'}, 403
+
+            if sender_role == 'teacher':
+                if not sender or not sender.department_id:
+                    return {
+                        'success': False,
+                        'message': 'Teacher account is not assigned to a department'
+                    }, 400
+
+                if department_id and int(department_id) != int(sender.department_id):
+                    return {
+                        'success': False,
+                        'message': 'Teachers can only send exams to their own department'
+                    }, 403
+
+                department_id = int(sender.department_id)
             
             # Verify exam is in a sendable state (approved or pending)
             if exam.admin_status not in ('approved', 'pending'):

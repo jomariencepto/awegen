@@ -142,14 +142,8 @@ function Login() {
             </Button>
           </form>
           
-          <div className="register-prompt">
-            <span>Don't have an account yet? </span>
-            <Link
-              to="/auth/signup"
-              className="register-link text-yellow-600 hover:text-yellow-700"
-            >
-              Register
-            </Link>
+          <div className="register-prompt text-sm text-gray-600">
+            Need an account? Contact your administrator to create it from the admin panel.
           </div>
         </CardContent>
       </Card>

@@ -256,7 +256,7 @@ class SavedModuleService:
             return {'success': False, 'message': 'Failed to get module'}, 500
 
     @staticmethod
-    def get_modules_by_teacher(teacher_id, page=1, per_page=10):
+    def get_modules_by_teacher(teacher_id, page=1, per_page=10, allowed_subject_ids=None):
         """
         Get all modules for a specific teacher
         EXCLUDES archived modules (is_archived = 1)
@@ -268,6 +268,24 @@ class SavedModuleService:
             
             # Query modules - EXCLUDE archived ones
             query = Module.query.filter_by(teacher_id=teacher_id)
+
+            if allowed_subject_ids is not None:
+                normalized_subject_ids = {
+                    int(subject_id)
+                    for subject_id in allowed_subject_ids
+                    if subject_id is not None
+                }
+                if not normalized_subject_ids:
+                    return {
+                        'success': True,
+                        'modules': [],
+                        'total': 0,
+                        'page': page,
+                        'per_page': per_page,
+                        'total_pages': 0
+                    }, 200
+
+                query = query.filter(Module.subject_id.in_(normalized_subject_ids))
             
             # Filter out archived modules
             query = query.filter(
@@ -334,6 +352,7 @@ class SavedModuleService:
                         'subject_name': subject_name,
                         'department_name': department_name,
                         'file_path': module.file_path,
+                        'file_name': os.path.basename(module.file_path) if module.file_path else None,
                         'file_type': module.file_type,
                         'file_size': module.file_size,
                         'teaching_hours': module.teaching_hours,

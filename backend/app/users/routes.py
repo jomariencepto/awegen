@@ -101,6 +101,20 @@ def get_current_user():
     }), 200
 
 
+@users_bp.route('/me/subjects', methods=['GET'])
+@jwt_required()
+def get_current_user_subjects():
+    user_id = get_jwt_identity()
+
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return jsonify({'success': False, 'message': 'Invalid user ID in token'}), 400
+
+    result, status_code = UserService.get_current_user_subjects(user_id)
+    return jsonify(result), status_code
+
+
 @users_bp.route('/me', methods=['PUT'])
 @jwt_required()
 def update_current_user():
@@ -109,34 +123,9 @@ def update_current_user():
     Used by Settings.jsx to save name changes
     """
     user_id = get_jwt_identity()
-    data = request.get_json()
-    
-    # Use UserService if it handles generic updates, or manual update here
-    # Assuming we are updating first_name and last_name
-    
-    from app.auth.models import User
-    user = User.query.get(user_id)
-    
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
-        
-    if 'first_name' in data:
-        user.first_name = data['first_name']
-    if 'last_name' in data:
-        user.last_name = data['last_name']
-    
-    try:
-        db.session.commit()
-        return jsonify({
-            'success': True, 
-            'message': 'Profile updated successfully'
-        }), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({
-            'success': False, 
-            'message': 'Failed to update profile'
-        }), 500
+    data = request.get_json() or {}
+    result, status_code = UserService.update_current_user_profile(int(user_id), data)
+    return jsonify(result), status_code
 
 
 @users_bp.route('/change-password', methods=['PUT'])

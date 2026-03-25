@@ -1,76 +1,100 @@
-import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
+import React, { useEffect, useState } from 'react';
+import { CheckCircle2, Loader2, Lock, Save, Shield, User } from 'lucide-react';
+
+import { useAuth } from '../../context/AuthContext';
 import { Button } from '../../components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
-import { User, Lock, Save, Shield, Loader2, CheckCircle2 } from 'lucide-react';
 import api from '../../utils/api';
 
+const formatRole = (role) => {
+  if (!role) return 'Loading...';
+  return String(role)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
 function Settings() {
-  const [user, setUser] = useState({
-    first_name: '',
-    last_name: '',
-    email: '',
-    role: ''
-  });
-  
+  const { currentUser, refreshCurrentUser } = useAuth();
   const [profileData, setProfileData] = useState({
     first_name: '',
     last_name: '',
-    email: ''
+    email: '',
   });
-
   const [passwordData, setPasswordData] = useState({
     current_password: '',
     new_password: '',
-    confirm_password: ''
+    confirm_password: '',
   });
-
+  const [emailChangePassword, setEmailChangePassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
 
-  // Fetch current user details on mount
   useEffect(() => {
-    fetchUserProfile();
-  }, []);
+    setProfileData({
+      first_name: currentUser?.first_name || '',
+      last_name: currentUser?.last_name || '',
+      email: currentUser?.email || '',
+    });
+    setEmailChangePassword('');
+  }, [currentUser]);
 
-  const fetchUserProfile = async () => {
-    try {
-      // NOTE: Ensure this endpoint exists in your backend: GET /api/users/me
-      const response = await api.get('/users/me');
-      const userData = response.data.user || response.data;
-      
-      setUser(userData);
-      setProfileData({
-        first_name: userData.first_name || '',
-        last_name: userData.last_name || '',
-        email: userData.email || ''
-      });
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
-      setMessage({ type: 'error', text: 'Failed to load profile data.' });
-    }
-  };
+  const normalizedCurrentEmail = String(currentUser?.email || '').trim().toLowerCase();
+  const normalizedFormEmail = String(profileData.email || '').trim().toLowerCase();
+  const isEmailChanged = normalizedFormEmail !== normalizedCurrentEmail;
 
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
     setLoading(true);
     setMessage({ type: '', text: '' });
 
+    const firstName = profileData.first_name.trim();
+    const lastName = profileData.last_name.trim();
+    const email = profileData.email.trim();
+
+    if (!firstName || !lastName || !email) {
+      setMessage({ type: 'error', text: 'First name, last name, and email are required.' });
+      setLoading(false);
+      return;
+    }
+
+    if (isEmailChanged && !emailChangePassword) {
+      setMessage({ type: 'error', text: 'Current password is required to change your email.' });
+      setLoading(false);
+      return;
+    }
+
     try {
-      // NOTE: Ensure this endpoint exists: PUT /api/users/me
-      const response = await api.put('/users/me', profileData);
-      
-      setMessage({ type: 'success', text: 'Profile updated successfully!' });
-      
-      // Update local state
-      setUser({ ...user, ...profileData });
-      
-      setTimeout(() => setMessage({ type: '', text: '' }), 3000);
+      const response = await api.put('/users/me', {
+        first_name: firstName,
+        last_name: lastName,
+        email,
+        current_password: isEmailChanged ? emailChangePassword : '',
+      });
+
+      const updatedUser = response.data?.user || {};
+      const cachedUser = JSON.parse(localStorage.getItem('user') || 'null');
+      if (cachedUser) {
+        localStorage.setItem(
+          'user',
+          JSON.stringify({
+            ...cachedUser,
+            ...updatedUser,
+            first_name: updatedUser.first_name || firstName,
+            last_name: updatedUser.last_name || lastName,
+            email: updatedUser.email || email,
+          })
+        );
+      }
+
+      await refreshCurrentUser();
+      setEmailChangePassword('');
+      setMessage({ type: 'success', text: response.data?.message || 'Profile updated successfully!' });
+      setTimeout(() => setMessage({ type: '', text: '' }), 4000);
     } catch (error) {
-      console.error('Error updating profile:', error);
       setMessage({ type: 'error', text: error.response?.data?.message || 'Failed to update profile.' });
     } finally {
       setLoading(false);
@@ -89,18 +113,15 @@ function Settings() {
     }
 
     try {
-      // NOTE: Ensure this endpoint exists: PUT /api/users/change-password
-      const response = await api.put('/users/change-password', {
+      await api.put('/users/change-password', {
         current_password: passwordData.current_password,
-        new_password: passwordData.new_password
+        new_password: passwordData.new_password,
       });
-      
+
       setMessage({ type: 'success', text: 'Password changed successfully!' });
       setPasswordData({ current_password: '', new_password: '', confirm_password: '' });
-      
       setTimeout(() => setMessage({ type: '', text: '' }), 3000);
     } catch (error) {
-      console.error('Error changing password:', error);
       setMessage({ type: 'error', text: error.response?.data?.message || 'Failed to change password.' });
     } finally {
       setPasswordLoading(false);
@@ -116,11 +137,10 @@ function Settings() {
         </p>
       </div>
 
-      {/* Alert Message */}
       {message.text && (
         <div className={`p-4 rounded-md flex items-center ${
-          message.type === 'success' 
-            ? 'bg-green-50 text-green-800 border border-green-200' 
+          message.type === 'success'
+            ? 'bg-green-50 text-green-800 border border-green-200'
             : 'bg-red-50 text-red-800 border border-red-200'
         }`}>
           {message.type === 'success' ? (
@@ -144,7 +164,6 @@ function Settings() {
           </TabsTrigger>
         </TabsList>
 
-        {/* Profile Tab */}
         <TabsContent value="profile">
           <Card>
             <CardHeader>
@@ -175,23 +194,40 @@ function Settings() {
                     />
                   </div>
                 </div>
-                
+
                 <div className="space-y-2">
                   <Label htmlFor="email">Email Address</Label>
                   <Input
                     id="email"
                     type="email"
                     value={profileData.email}
-                    disabled // Usually email changes require verification or are disabled
-                    className="bg-gray-50"
+                    onChange={(e) => setProfileData({ ...profileData, email: e.target.value })}
+                    required
                   />
+                  <p className="text-xs text-muted-foreground">
+                    If you change your email, enter your current password below and AWEGen will send a confirmation email to the new address.
+                  </p>
                 </div>
+
+                {isEmailChanged && (
+                  <div className="space-y-2">
+                    <Label htmlFor="email_change_password">Current Password</Label>
+                    <Input
+                      id="email_change_password"
+                      type="password"
+                      value={emailChangePassword}
+                      onChange={(e) => setEmailChangePassword(e.target.value)}
+                      placeholder="Required to confirm your new email"
+                      required={isEmailChanged}
+                    />
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <Label htmlFor="role">Role</Label>
                   <Input
                     id="role"
-                    value={user.role ? user.role.replace('_', ' ').toUpperCase() : 'Loading...'}
+                    value={formatRole(currentUser?.role)}
                     disabled
                     className="bg-gray-50"
                   />
@@ -217,7 +253,6 @@ function Settings() {
           </Card>
         </TabsContent>
 
-        {/* Security Tab */}
         <TabsContent value="security">
           <Card>
             <CardHeader>
@@ -263,7 +298,7 @@ function Settings() {
                     />
                   </div>
                 </div>
-                
+
                 <div className="pt-4 flex justify-end">
                   <Button type="submit" disabled={passwordLoading} className="min-w-[120px]">
                     {passwordLoading ? (

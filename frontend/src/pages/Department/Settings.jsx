@@ -1,60 +1,124 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { toast } from 'react-hot-toast';
+
 import { useAuth } from '../../context/AuthContext';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
-import { toast } from 'react-hot-toast';
 import api from '../../utils/api';
 
+const formatRole = (role) => {
+  if (!role) return 'N/A';
+  return String(role)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+};
+
 function Settings() {
-  const { currentUser } = useAuth();
-  const [isLoading, setIsLoading] = useState(false);
+  const { currentUser, refreshCurrentUser } = useAuth();
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [isPasswordLoading, setIsPasswordLoading] = useState(false);
+  const [emailChangePassword, setEmailChangePassword] = useState('');
+
   const [formData, setFormData] = useState({
-    first_name: currentUser?.first_name || '',
-    last_name: currentUser?.last_name || '',
-    email: currentUser?.email || '',
+    first_name: '',
+    last_name: '',
+    email: '',
   });
+
   const [passwordData, setPasswordData] = useState({
     current_password: '',
     new_password: '',
     confirm_password: '',
   });
 
+  useEffect(() => {
+    setFormData({
+      first_name: currentUser?.first_name || '',
+      last_name: currentUser?.last_name || '',
+      email: currentUser?.email || '',
+    });
+    setEmailChangePassword('');
+  }, [currentUser]);
+
+  const normalizedCurrentEmail = String(currentUser?.email || '').trim().toLowerCase();
+  const normalizedFormEmail = String(formData.email || '').trim().toLowerCase();
+  const isEmailChanged = normalizedFormEmail !== normalizedCurrentEmail;
+  const departmentLabel =
+    currentUser?.department?.department_name ||
+    currentUser?.department_name ||
+    'N/A';
+
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
-    setIsLoading(true);
-    
+
+    const firstName = formData.first_name.trim();
+    const lastName = formData.last_name.trim();
+    const email = formData.email.trim();
+
+    if (!firstName || !lastName || !email) {
+      toast.error('First name, last name, and email are required');
+      return;
+    }
+
+    if (isEmailChanged && !emailChangePassword) {
+      toast.error('Current password is required to change your email');
+      return;
+    }
+
+    setIsProfileLoading(true);
+
     try {
-      await api.put('/users/me', {
-        first_name: formData.first_name,
-        last_name: formData.last_name
+      const response = await api.put('/users/me', {
+        first_name: firstName,
+        last_name: lastName,
+        email,
+        current_password: isEmailChanged ? emailChangePassword : '',
       });
-      toast.success('Profile updated successfully!');
+
+      const updatedUser = response.data?.user || {};
+      const cachedUser = JSON.parse(localStorage.getItem('user') || 'null');
+      if (cachedUser) {
+        localStorage.setItem(
+          'user',
+          JSON.stringify({
+            ...cachedUser,
+            ...updatedUser,
+            first_name: updatedUser.first_name || firstName,
+            last_name: updatedUser.last_name || lastName,
+            email: updatedUser.email || email,
+          })
+        );
+      }
+
+      await refreshCurrentUser();
+      setEmailChangePassword('');
+      toast.success(response.data?.message || 'Profile updated successfully');
     } catch (error) {
       const message = error.response?.data?.message || 'Failed to update profile';
       toast.error(message);
     } finally {
-      setIsLoading(false);
+      setIsProfileLoading(false);
     }
   };
 
   const handlePasswordChange = async (e) => {
     e.preventDefault();
-    
+
     if (passwordData.new_password !== passwordData.confirm_password) {
       toast.error('New passwords do not match');
       return;
     }
 
-    setIsLoading(true);
-    
+    setIsPasswordLoading(true);
+
     try {
       await api.put('/users/change-password', {
         current_password: passwordData.current_password,
         new_password: passwordData.new_password,
       });
-      toast.success('Password changed successfully!');
+      toast.success('Password changed successfully');
       setPasswordData({
         current_password: '',
         new_password: '',
@@ -64,7 +128,7 @@ function Settings() {
       const message = error.response?.data?.message || 'Failed to change password';
       toast.error(message);
     } finally {
-      setIsLoading(false);
+      setIsPasswordLoading(false);
     }
   };
 
@@ -92,35 +156,51 @@ function Settings() {
                 <Input
                   id="first_name"
                   value={formData.first_name}
-                  onChange={(e) => setFormData({...formData, first_name: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
                   required
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="last_name">Last Name</Label>
                 <Input
                   id="last_name"
                   value={formData.last_name}
-                  onChange={(e) => setFormData({...formData, last_name: e.target.value})}
+                  onChange={(e) => setFormData({ ...formData, last_name: e.target.value })}
                   required
                 />
               </div>
-              
-              {/* Email is not updated via profile endpoint; kept read-only */}
+
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
                   id="email"
                   type="email"
                   value={formData.email}
-                  readOnly
-                  className="bg-gray-100"
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  required
                 />
+                <p className="text-xs text-gray-500">
+                  You can change your email here. If you update it, enter your current password below and AWEGen will send a confirmation email to the new address.
+                </p>
               </div>
-              
-              <Button type="submit" disabled={isLoading}>
-                {isLoading ? 'Updating...' : 'Update Profile'}
+
+              {isEmailChanged && (
+                <div className="space-y-2">
+                  <Label htmlFor="email_change_password">Current Password</Label>
+                  <Input
+                    id="email_change_password"
+                    type="password"
+                    value={emailChangePassword}
+                    onChange={(e) => setEmailChangePassword(e.target.value)}
+                    placeholder="Required to confirm your new email"
+                    required={isEmailChanged}
+                  />
+                </div>
+              )}
+
+              <Button type="submit" disabled={isProfileLoading}>
+                {isProfileLoading ? 'Updating...' : 'Update Profile'}
               </Button>
             </form>
           </CardContent>
@@ -141,35 +221,35 @@ function Settings() {
                   id="current_password"
                   type="password"
                   value={passwordData.current_password}
-                  onChange={(e) => setPasswordData({...passwordData, current_password: e.target.value})}
+                  onChange={(e) => setPasswordData({ ...passwordData, current_password: e.target.value })}
                   required
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="new_password">New Password</Label>
                 <Input
                   id="new_password"
                   type="password"
                   value={passwordData.new_password}
-                  onChange={(e) => setPasswordData({...passwordData, new_password: e.target.value})}
+                  onChange={(e) => setPasswordData({ ...passwordData, new_password: e.target.value })}
                   required
                 />
               </div>
-              
+
               <div className="space-y-2">
                 <Label htmlFor="confirm_password">Confirm New Password</Label>
                 <Input
                   id="confirm_password"
                   type="password"
                   value={passwordData.confirm_password}
-                  onChange={(e) => setPasswordData({...passwordData, confirm_password: e.target.value})}
+                  onChange={(e) => setPasswordData({ ...passwordData, confirm_password: e.target.value })}
                   required
                 />
               </div>
-              
-              <Button type="submit" disabled={isLoading}>
-                {isLoading ? 'Changing...' : 'Change Password'}
+
+              <Button type="submit" disabled={isPasswordLoading}>
+                {isPasswordLoading ? 'Changing...' : 'Change Password'}
               </Button>
             </form>
           </CardContent>
@@ -187,11 +267,11 @@ function Settings() {
           <div className="space-y-2">
             <div className="flex justify-between">
               <span className="text-sm font-medium">Role:</span>
-              <span className="text-sm text-gray-600">{currentUser?.role?.role_name}</span>
+              <span className="text-sm text-gray-600">{formatRole(currentUser?.role)}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-sm font-medium">Department:</span>
-              <span className="text-sm text-gray-600">{currentUser?.department?.department_name || 'N/A'}</span>
+              <span className="text-sm text-gray-600">{departmentLabel}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-sm font-medium">Account Created:</span>

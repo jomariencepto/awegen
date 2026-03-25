@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { toast } from 'react-hot-toast';
+
 import { useAuth } from '../../context/AuthContext';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
-import { toast } from 'react-hot-toast';
 import api from '../../utils/api';
 
 const formatRole = (role) => {
@@ -15,14 +16,15 @@ const formatRole = (role) => {
 };
 
 function Settings() {
-  const { currentUser } = useAuth();
+  const { currentUser, refreshCurrentUser } = useAuth();
   const [isProfileLoading, setIsProfileLoading] = useState(false);
   const [isPasswordLoading, setIsPasswordLoading] = useState(false);
+  const [emailChangePassword, setEmailChangePassword] = useState('');
 
   const [formData, setFormData] = useState({
-    first_name: currentUser?.first_name || '',
-    last_name: currentUser?.last_name || '',
-    email: currentUser?.email || '',
+    first_name: '',
+    last_name: '',
+    email: '',
   });
 
   const [passwordData, setPasswordData] = useState({
@@ -37,41 +39,62 @@ function Settings() {
       last_name: currentUser?.last_name || '',
       email: currentUser?.email || '',
     });
+    setEmailChangePassword('');
   }, [currentUser]);
+
+  const normalizedCurrentEmail = String(currentUser?.email || '').trim().toLowerCase();
+  const normalizedFormEmail = String(formData.email || '').trim().toLowerCase();
+  const isEmailChanged = normalizedFormEmail !== normalizedCurrentEmail;
+  const departmentLabel =
+    currentUser?.department?.department_name ||
+    currentUser?.department_name ||
+    'N/A';
 
   const handleProfileUpdate = async (e) => {
     e.preventDefault();
 
     const firstName = formData.first_name.trim();
     const lastName = formData.last_name.trim();
+    const email = formData.email.trim();
 
-    if (!firstName || !lastName) {
-      toast.error('First name and last name are required');
+    if (!firstName || !lastName || !email) {
+      toast.error('First name, last name, and email are required');
+      return;
+    }
+
+    if (isEmailChanged && !emailChangePassword) {
+      toast.error('Current password is required to change your email');
       return;
     }
 
     setIsProfileLoading(true);
 
     try {
-      await api.put('/users/me', {
+      const response = await api.put('/users/me', {
         first_name: firstName,
         last_name: lastName,
+        email,
+        current_password: isEmailChanged ? emailChangePassword : '',
       });
 
-      // Keep local storage profile data in sync for UIs that read from it.
+      const updatedUser = response.data?.user || {};
       const cachedUser = JSON.parse(localStorage.getItem('user') || 'null');
       if (cachedUser) {
         localStorage.setItem(
           'user',
           JSON.stringify({
             ...cachedUser,
-            first_name: firstName,
-            last_name: lastName,
+            ...updatedUser,
+            first_name: updatedUser.first_name || firstName,
+            last_name: updatedUser.last_name || lastName,
+            email: updatedUser.email || email,
           })
         );
       }
 
-      toast.success('Profile updated successfully');
+      await refreshCurrentUser();
+      setEmailChangePassword('');
+      toast.success(response.data?.message || 'Profile updated successfully');
     } catch (error) {
       const message = error.response?.data?.message || 'Failed to update profile';
       toast.error(message);
@@ -155,10 +178,27 @@ function Settings() {
                   id="email"
                   type="email"
                   value={formData.email}
-                  readOnly
-                  className="bg-gray-100"
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  required
                 />
+                <p className="text-xs text-gray-500">
+                  You can change your email here. If you update it, enter your current password below and AWEGen will send a confirmation email to the new address.
+                </p>
               </div>
+
+              {isEmailChanged && (
+                <div className="space-y-2">
+                  <Label htmlFor="email_change_password">Current Password</Label>
+                  <Input
+                    id="email_change_password"
+                    type="password"
+                    value={emailChangePassword}
+                    onChange={(e) => setEmailChangePassword(e.target.value)}
+                    placeholder="Required to confirm your new email"
+                    required={isEmailChanged}
+                  />
+                </div>
+              )}
 
               <Button type="submit" disabled={isProfileLoading}>
                 {isProfileLoading ? 'Updating...' : 'Update Profile'}
@@ -232,7 +272,7 @@ function Settings() {
             </div>
             <div className="flex justify-between">
               <span className="text-sm font-medium">Department:</span>
-              <span className="text-sm text-gray-600">{currentUser?.department?.department_name || 'N/A'}</span>
+              <span className="text-sm text-gray-600">{departmentLabel}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-sm font-medium">Account Created:</span>

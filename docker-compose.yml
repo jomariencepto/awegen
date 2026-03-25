@@ -54,7 +54,7 @@ services:
       SMTP_SERVER: smtp.gmail.com
       SMTP_PORT: 587
       SMTP_USERNAME: thesisawegen@gmail.com
-      SMTP_PASSWORD: qvjm scns kdeb imjh
+      SMTP_PASSWORD: dvhlwmkgmbzylppt
       FROM_EMAIL: thesisawegen@gmail.com
       FROM_NAME: FROM_NAME:-AWEGen System
     ports:

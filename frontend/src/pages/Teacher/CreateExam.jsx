@@ -306,6 +306,8 @@ function CreateExam({ mode = 'teacher' }) {
 
     return groups;
   }, [departments, subjects]);
+  const hasAvailableSubjects = subjects.length > 0;
+  const showTeacherAssignmentNotice = !isDepartmentMode && !hasAvailableSubjects;
 
   const subjectsById = useMemo(() => {
     const lookup = new Map();
@@ -416,7 +418,10 @@ function CreateExam({ mode = 'teacher' }) {
     const endpoint = isDepartmentMode
       ? '/departments/modules'
       : `/modules/teacher/${currentUser.user_id}`;
-    const response = await api.get(endpoint);
+    const response = await api.get(
+      endpoint,
+      isDepartmentMode ? undefined : { params: { per_page: 100 } }
+    );
     const serverModules = response.data.modules || [];
     syncModulesState(serverModules, moduleIdsToSelect);
     return serverModules;
@@ -431,23 +436,33 @@ function CreateExam({ mode = 'teacher' }) {
       try {
         const modulesPromise = isDepartmentMode
           ? api.get('/departments/modules')
-          : api.get(`/modules/teacher/${currentUser.user_id}`);
+          : api.get(`/modules/teacher/${currentUser.user_id}`, {
+              params: { per_page: 100 },
+            });
 
-        const subjectsPromise = api.get('/users/subjects');
+        const subjectsPromise = api.get('/users/me/subjects');
 
-        const [modulesRes, categoriesRes, subjectsRes, departmentsRes] = await Promise.all([
+        const [modulesRes, categoriesRes, subjectsRes] = await Promise.all([
           modulesPromise,
           api.get('/exams/categories'),
           subjectsPromise,
-          api.get('/departments'),
         ]);
 
         if (!active) return;
 
+        const departmentId =
+          subjectsRes.data?.department_id ?? currentUser?.department_id ?? null;
+        const departmentName =
+          subjectsRes.data?.department_name || currentUser?.department_name || '';
+
         syncModulesState(modulesRes.data.modules || []);
         setCategories(categoriesRes.data.categories || []);
         setSubjects(subjectsRes.data.subjects || []);
-        setDepartments(departmentsRes.data.departments || []);
+        setDepartments(
+          departmentName
+            ? [{ department_id: departmentId, department_name: departmentName }]
+            : []
+        );
       } catch {
         if (!active) return;
         toast.error('Failed to load data');
@@ -940,6 +955,26 @@ function CreateExam({ mode = 'teacher' }) {
                 </ol>
               </div>
 
+              {showTeacherAssignmentNotice && (
+                <div
+                  style={{
+                    padding: '12px 14px',
+                    border: '1px solid #FCD34D',
+                    backgroundColor: '#FFFBEB',
+                    borderRadius: '8px',
+                    marginBottom: '16px',
+                  }}
+                >
+                  <p style={{ margin: 0, fontSize: '13px', fontWeight: 600, color: '#92400E' }}>
+                    No subjects assigned yet
+                  </p>
+                  <p style={{ margin: '6px 0 0 0', fontSize: '12px', color: '#B45309', lineHeight: 1.5 }}>
+                    Admin needs to assign subjects for this teacher before they can upload
+                    modules or generate exams from them.
+                  </p>
+                </div>
+              )}
+
               {/* ── Basic info ── */}
               <div className="form-group">
                 <Label>Exam Title *</Label>
@@ -1195,31 +1230,40 @@ function CreateExam({ mode = 'teacher' }) {
                   <div className="upload-section-content">
                     <div className="form-group">
                       <Label>Subject *</Label>
-                      <Select onValueChange={(v) => setSelectedSubject(Number(v))} disabled={isLoading}>
+                      <Select
+                        onValueChange={(v) => setSelectedSubject(Number(v))}
+                        disabled={isLoading || groupedSubjects.length === 0}
+                      >
                         <SelectTrigger>
                           <SelectValue placeholder="Select subject" />
                         </SelectTrigger>
                         <SelectContent>
-                          {groupedSubjects.map((group, groupIndex) => (
-                            <React.Fragment key={`upload-group-${group.departmentName}`}>
-                              <SelectGroup>
-                                <SelectLabel className="bg-yellow-50 text-yellow-800 rounded-sm">
-                                  {group.departmentName}
-                                </SelectLabel>
-                                {group.subjects.length === 0 && (
-                                  <SelectItem value={`__empty-dept-${group.key}`} disabled>
-                                    No subjects yet
-                                  </SelectItem>
-                                )}
-                                {group.subjects.map((subject) => (
-                                  <SelectItem key={subject.subject_id} value={String(subject.subject_id)}>
-                                    {formatSubjectLabel(subject)}
-                                  </SelectItem>
-                                ))}
-                              </SelectGroup>
-                              {groupIndex < groupedSubjects.length - 1 && <SelectSeparator />}
-                            </React.Fragment>
-                          ))}
+                          {groupedSubjects.length === 0 ? (
+                            <SelectItem value="__no_subjects__" disabled>
+                              No assigned subjects yet
+                            </SelectItem>
+                          ) : (
+                            groupedSubjects.map((group, groupIndex) => (
+                              <React.Fragment key={`upload-group-${group.departmentName}`}>
+                                <SelectGroup>
+                                  <SelectLabel className="bg-yellow-50 text-yellow-800 rounded-sm">
+                                    {group.departmentName}
+                                  </SelectLabel>
+                                  {group.subjects.length === 0 && (
+                                    <SelectItem value={`__empty-dept-${group.key}`} disabled>
+                                      No subjects yet
+                                    </SelectItem>
+                                  )}
+                                  {group.subjects.map((subject) => (
+                                    <SelectItem key={subject.subject_id} value={String(subject.subject_id)}>
+                                      {formatSubjectLabel(subject)}
+                                    </SelectItem>
+                                  ))}
+                                </SelectGroup>
+                                {groupIndex < groupedSubjects.length - 1 && <SelectSeparator />}
+                              </React.Fragment>
+                            ))
+                          )}
                         </SelectContent>
                       </Select>
                     </div>
@@ -1268,7 +1312,12 @@ function CreateExam({ mode = 'teacher' }) {
                     <Button
                       type="button"
                       onClick={handleUploadModules}
-                      disabled={isLoading || !selectedFiles.length || !selectedSubject}
+                      disabled={
+                        isLoading ||
+                        groupedSubjects.length === 0 ||
+                        !selectedFiles.length ||
+                        !selectedSubject
+                      }
                       className="btn-upload"
                     >
                       Upload & Add to Exam

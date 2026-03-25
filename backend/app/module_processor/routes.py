@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_req
 from flask_jwt_extended.exceptions import JWTExtendedException
 
 from app.auth.models import User
+from app.users.models import Subject
 from app.utils.decorators import module_owner_or_admin
 from app.utils.logger import get_logger
 import os
@@ -88,6 +89,45 @@ def upload_module():
                 "message": "subject_id is required"
             }), 400
 
+        subject = Subject.query.get(subject_id)
+        if not subject:
+            return jsonify({
+                "success": False,
+                "message": "Subject not found"
+            }), 404
+
+        user_role = (user.role or '').strip().lower()
+        if user_role == 'teacher':
+            from app.users.service import UserService
+
+            if not user.department_id:
+                return jsonify({
+                    "success": False,
+                    "message": "Your teacher account is not assigned to a department"
+                }), 400
+
+            if not UserService._ensure_teacher_subject_assignments_table():
+                return jsonify({
+                    "success": False,
+                    "message": "Failed to verify your assigned subjects"
+                }), 500
+
+            assigned_subject_ids = UserService.get_teacher_assigned_subject_ids(
+                user.user_id,
+                ensure_table=False,
+            ) or set()
+            if not assigned_subject_ids:
+                return jsonify({
+                    "success": False,
+                    "message": "No subjects are assigned to this teacher yet. Please contact the admin."
+                }), 403
+
+            if subject_id not in assigned_subject_ids:
+                return jsonify({
+                    "success": False,
+                    "message": "This subject is not assigned to this teacher"
+                }), 403
+
         owner_id = user_id
 
         logger.info(f"Module upload: uploader={owner_id}, subject={subject_id}, file={file.filename}")
@@ -155,10 +195,28 @@ def get_modules_by_teacher(teacher_id):
 
         page = request.args.get("page", 1, type=int)
         per_page = min(request.args.get("per_page", 10, type=int), 100)  # Cap at 100
+        allowed_subject_ids = None
+
+        if current_user_id == teacher_id and (current_user.role or '').strip().lower() == 'teacher':
+            from app.users.service import UserService
+
+            if not UserService._ensure_teacher_subject_assignments_table():
+                return jsonify({
+                    "success": False,
+                    "message": "Failed to verify teacher subject assignments"
+                }), 500
+
+            allowed_subject_ids = UserService.get_teacher_assigned_subject_ids(
+                current_user.user_id,
+                ensure_table=False,
+            ) or set()
 
         from app.module_processor.saved_module import SavedModuleService
         result, status_code = SavedModuleService.get_modules_by_teacher(
-            teacher_id, page, per_page
+            teacher_id,
+            page,
+            per_page,
+            allowed_subject_ids=allowed_subject_ids,
         )
 
         return jsonify(result), status_code

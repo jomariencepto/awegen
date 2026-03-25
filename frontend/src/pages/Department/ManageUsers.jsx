@@ -12,19 +12,31 @@ function ManageUsers() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
+  const sortUsersByNewestFirst = (userList = []) =>
+    [...userList].sort((left, right) => {
+      const leftCreatedAt = left?.created_at ? new Date(left.created_at).getTime() : 0;
+      const rightCreatedAt = right?.created_at ? new Date(right.created_at).getTime() : 0;
+
+      if (rightCreatedAt !== leftCreatedAt) {
+        return rightCreatedAt - leftCreatedAt;
+      }
+
+      return (right?.user_id || 0) - (left?.user_id || 0);
+    });
+
   useEffect(() => {
     fetchUsers();
   }, []);
 
   useEffect(() => {
     if (searchTerm) {
-      setFilteredUsers(users.filter(user => 
+      setFilteredUsers(sortUsersByNewestFirst(users.filter(user =>
         user.first_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.last_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         user.email.toLowerCase().includes(searchTerm.toLowerCase())
-      ));
+      )));
     } else {
-      setFilteredUsers(users);
+      setFilteredUsers(sortUsersByNewestFirst(users));
     }
   }, [searchTerm, users]);
 
@@ -36,8 +48,9 @@ function ManageUsers() {
           per_page: 1000, // fetch up to 1000 in one go; adjust if needed
         },
       });
-      setUsers(response.data.users || []);
-      setFilteredUsers(response.data.users || []);
+      const sortedUsers = sortUsersByNewestFirst(response.data.users || []);
+      setUsers(sortedUsers);
+      setFilteredUsers(sortedUsers);
     } catch (error) {
       console.error('Error fetching users:', error);
       setUsers([]);

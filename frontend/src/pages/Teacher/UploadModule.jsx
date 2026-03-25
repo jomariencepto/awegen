@@ -17,7 +17,7 @@ import {
 } from '../../components/ui/select';
 import { Progress } from '../../components/ui/progress';
 import { Badge } from '../../components/ui/badge';
-import { Upload, FileText, CheckCircle, X, AlertCircle, BookOpen, Trash2, Edit, Search, HelpCircle, Loader2 } from 'lucide-react';
+import { Upload, FileText, CheckCircle, X, AlertCircle, BookOpen, Trash2, Download, Loader2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import api from '../../utils/api';
@@ -73,79 +73,54 @@ function UploadModule() {
 
   const selectedSubjectId = watch('subject_id');
   const formatSubjectLabel = (subject) => subject?.subject_name || 'Unnamed Subject';
+  const teacherDepartmentName = useMemo(() => {
+    const rawName =
+      currentUser?.department_name || departments[0]?.department_name || 'Assigned Subjects';
+    return String(rawName).trim() || 'Assigned Subjects';
+  }, [currentUser?.department_name, departments]);
+
   const groupedSubjects = useMemo(() => {
-    const normalizedDepartments = (departments || [])
-      .map((department) => ({
-        id: department?.department_id ?? department?.id ?? null,
-        name: String(department?.department_name || department?.name || '').trim()
-      }))
-      .filter((department) => department.name.length > 0);
+    const sortedSubjects = [...(subjects || [])].sort((a, b) =>
+      formatSubjectLabel(a).localeCompare(formatSubjectLabel(b))
+    );
 
-    const groups = normalizedDepartments.map((department) => ({
-      key: `dep-${department.id ?? department.name.toLowerCase()}`,
-      departmentName: department.name,
-      subjects: []
-    }));
-
-    const groupsByDepartmentId = new Map();
-    const groupsByDepartmentName = new Map();
-
-    normalizedDepartments.forEach((department, idx) => {
-      const group = groups[idx];
-      if (department.id !== null && department.id !== undefined && department.id !== '') {
-        groupsByDepartmentId.set(Number(department.id), group);
-      }
-      groupsByDepartmentName.set(department.name.toLowerCase(), group);
-    });
-
-    subjects.forEach((subject) => {
-      let group = null;
-      if (subject?.department_id !== null && subject?.department_id !== undefined) {
-        group = groupsByDepartmentId.get(Number(subject.department_id)) || null;
-      }
-      if (!group && subject?.department_name) {
-        group = groupsByDepartmentName.get(String(subject.department_name).trim().toLowerCase()) || null;
-      }
-
-      if (!group) {
-        const fallbackName = String(subject?.department_name || 'Other Department').trim();
-        const fallbackKey = fallbackName.toLowerCase();
-        group = groupsByDepartmentName.get(fallbackKey) || null;
-        if (!group) {
-          group = {
-            key: `fallback-${fallbackKey.replace(/\s+/g, '-')}`,
-            departmentName: fallbackName,
-            subjects: []
-          };
-          groups.push(group);
-          groupsByDepartmentName.set(fallbackKey, group);
-        }
-      }
-
-      group.subjects.push(subject);
-    });
-
-    return groups;
-  }, [departments, subjects]);
+    return [
+      {
+        key: 'teacher-department',
+        departmentName: teacherDepartmentName,
+        subjects: sortedSubjects,
+      },
+    ];
+  }, [subjects, teacherDepartmentName]);
+  const hasAssignedSubjects = subjects.length > 0;
 
   useEffect(() => {
     const fetchLookups = async () => {
       try {
-        const [subjectsResponse, departmentsResponse] = await Promise.all([
-          api.get('/users/subjects'),
-          api.get('/departments')
-        ]);
-        setSubjects(subjectsResponse.data.subjects || []);
-        setDepartments(departmentsResponse.data.departments || []);
+        const subjectsResponse = await api.get('/users/me/subjects');
+        const fetchedSubjects = subjectsResponse.data?.subjects || [];
+        const departmentId =
+          subjectsResponse.data?.department_id ?? currentUser?.department_id ?? null;
+        const departmentName =
+          subjectsResponse.data?.department_name || currentUser?.department_name || '';
+
+        setSubjects(fetchedSubjects);
+        setDepartments(
+          departmentName
+            ? [{ department_id: departmentId, department_name: departmentName }]
+            : []
+        );
       } catch (error) {
         console.error('Error fetching subjects:', error);
-        toast.error('Failed to load subjects and departments');
+        setSubjects([]);
+        setDepartments([]);
+        toast.error('Failed to load your assigned subjects');
       }
     };
 
     fetchLookups();
     fetchModules();
-  }, []);
+  }, [currentUser?.department_id, currentUser?.department_name]);
 
   useEffect(() => {
     let result = [...modules];
@@ -173,7 +148,9 @@ function UploadModule() {
 
     try {
       setIsModulesLoading(true);
-      const response = await api.get(`/modules/teacher/${currentUser.user_id}`);
+      const response = await api.get(`/modules/teacher/${currentUser.user_id}`, {
+        params: { per_page: 100 },
+      });
       setModules(response.data.modules || []);
       setFilteredModules(response.data.modules || []);
     } catch (error) {
@@ -241,6 +218,42 @@ function UploadModule() {
         setUploadProgress(progress);
       },
     });
+  };
+
+  const getDownloadFilename = (module, response) => {
+    const contentDisposition = response?.headers?.['content-disposition'] || '';
+    const filenameMatch =
+      contentDisposition.match(/filename\*=UTF-8''([^;]+)/i) ||
+      contentDisposition.match(/filename=\"?([^"]+)\"?/i);
+
+    if (filenameMatch?.[1]) {
+      return decodeURIComponent(filenameMatch[1]);
+    }
+
+    if (module?.file_name) return module.file_name;
+    if (module?.title && module?.file_type) {
+      return `${module.title}.${module.file_type}`;
+    }
+    return module?.title || 'module-file';
+  };
+
+  const handleDownloadModule = async (module) => {
+    try {
+      const response = await api.get(`/modules/${module.module_id}/download`, {
+        responseType: 'blob',
+      });
+      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
+      const anchor = document.createElement('a');
+      anchor.href = blobUrl;
+      anchor.download = getDownloadFilename(module, response);
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Error downloading module:', error);
+      toast.error(error.response?.data?.message || 'Failed to download module');
+    }
   };
 
   const handleDeleteModule = async (moduleId) => {
@@ -344,45 +357,60 @@ function UploadModule() {
         <Card className="bg-white border border-amber-200 shadow-sm rounded-xl">
           <CardHeader>
             <CardTitle className="text-amber-900">Upload New Module</CardTitle>
-            <CardDescription className="text-amber-800">Select a subject and upload files</CardDescription>
+            <CardDescription className="text-amber-800">
+              Select one of your assigned subjects and upload files
+            </CardDescription>
           </CardHeader>
 
           <form onSubmit={handleSubmit(onSubmit)}>
             <CardContent className="space-y-4">
+              {!hasAssignedSubjects && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  No subjects are assigned to this teacher yet. Admin needs to assign
+                  subjects for this teacher before you can upload modules.
+                </div>
+              )}
+
               {/* Subject */}
               <div className="space-y-2">
                 <Label>Subject *</Label>
                 <Select
                   onValueChange={(value) => setValue('subject_id', Number(value))}
-                  disabled={isLoading}
+                  disabled={isLoading || !hasAssignedSubjects}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select subject" />
                   </SelectTrigger>
                   <SelectContent>
-                    {groupedSubjects.map((group, groupIndex) => (
-                      <React.Fragment key={`upload-group-${group.departmentName}`}>
-                        <SelectGroup>
-                          <SelectLabel className="bg-yellow-50 text-yellow-800 rounded-sm">
-                            {group.departmentName}
-                          </SelectLabel>
-                          {group.subjects.length === 0 && (
-                            <SelectItem value={`__empty-upload-${group.key}`} disabled>
-                              No subjects yet
-                            </SelectItem>
-                          )}
-                          {group.subjects.map((subject) => (
-                            <SelectItem
-                              key={subject.subject_id}
-                              value={subject.subject_id.toString()}
-                            >
-                              {formatSubjectLabel(subject)}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                        {groupIndex < groupedSubjects.length - 1 && <SelectSeparator />}
-                      </React.Fragment>
-                    ))}
+                    {groupedSubjects.length === 0 ? (
+                      <SelectItem value="__no_subjects__" disabled>
+                        No assigned subjects yet
+                      </SelectItem>
+                    ) : (
+                      groupedSubjects.map((group, groupIndex) => (
+                        <React.Fragment key={`upload-group-${group.departmentName}`}>
+                          <SelectGroup>
+                            <SelectLabel className="bg-yellow-50 text-yellow-800 rounded-sm">
+                              {group.departmentName}
+                            </SelectLabel>
+                            {group.subjects.length === 0 && (
+                              <SelectItem value={`__empty-upload-${group.key}`} disabled>
+                                No subjects yet
+                              </SelectItem>
+                            )}
+                            {group.subjects.map((subject) => (
+                              <SelectItem
+                                key={subject.subject_id}
+                                value={subject.subject_id.toString()}
+                              >
+                                {formatSubjectLabel(subject)}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                          {groupIndex < groupedSubjects.length - 1 && <SelectSeparator />}
+                        </React.Fragment>
+                      ))
+                    )}
                   </SelectContent>
                 </Select>
                 {errors.subject_id && (
@@ -454,7 +482,9 @@ function UploadModule() {
               <Button
                 type="submit"
                 className="w-full bg-amber-500 hover:bg-amber-600 text-white"
-                disabled={isLoading || !selectedFiles.length || !selectedSubjectId}
+                disabled={
+                  isLoading || !hasAssignedSubjects || !selectedFiles.length || !selectedSubjectId
+                }
               >
                 Upload {selectedFiles.length || ''} Module{selectedFiles.length !== 1 ? 's' : ''}
               </Button>
@@ -469,7 +499,9 @@ function UploadModule() {
               <BookOpen className="h-5 w-5 text-amber-700" />
               Your Modules
             </CardTitle>
-            <CardDescription className="text-amber-800">View and manage your uploaded modules</CardDescription>
+            <CardDescription className="text-amber-800">
+              View, download, and manage your uploaded modules
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {/* Search and Filter */}
@@ -538,7 +570,11 @@ function UploadModule() {
             ) : filteredModules.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <BookOpen className="mx-auto h-12 w-12 text-gray-300 mb-2" />
-                <p>No modules found</p>
+                <p>
+                  {hasAssignedSubjects
+                    ? 'No modules found'
+                    : 'No assigned subjects yet, so no modules are available.'}
+                </p>
               </div>
             ) : (
               <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2">
@@ -546,6 +582,9 @@ function UploadModule() {
                   <div key={module.module_id} className="flex items-start justify-between p-3 border border-amber-200 rounded-xl bg-white hover:bg-amber-50/40">
                     <div className="flex-1 min-w-0">
                       <h4 className="font-semibold text-sm text-amber-950 truncate">{module.title}</h4>
+                      {module.file_name && (
+                        <p className="mt-1 text-xs text-gray-500 truncate">{module.file_name}</p>
+                      )}
                       <div className="flex items-center gap-2 mt-1 flex-wrap">
                         <Badge variant="outline" className="text-xs">
                           {module.subject_name || 'Unknown'}
@@ -582,9 +621,10 @@ function UploadModule() {
                         size="sm"
                         variant="ghost"
                         className="h-8 w-8 p-0"
-                        title="Edit"
+                        title="Download"
+                        onClick={() => handleDownloadModule(module)}
                       >
-                        <Edit className="h-4 w-4" />
+                        <Download className="h-4 w-4" />
                       </Button>
                       <Button
                         size="sm"

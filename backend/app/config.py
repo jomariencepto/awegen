@@ -14,7 +14,8 @@ class Config:
     SECRET_KEY = os.environ.get("SECRET_KEY", "change-me-dev-only")
     JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "change-me-dev-only-jwt")
 
-    # MySQL database (required) - XAMPP default has no password
+    # MySQL database (required) - XAMPP default has no password #App password dvhl wmkg mbzy lppt
+
     SQLALCHEMY_DATABASE_URI = os.environ.get(
         "DATABASE_URL",
         "mysql+pymysql://root@localhost/awegen_db"

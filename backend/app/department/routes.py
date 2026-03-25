@@ -139,6 +139,67 @@ def get_my_department_dashboard():
     return jsonify(result), status_code
 
 
+@department_bp.route('/exam-compliance', methods=['GET'])
+@jwt_required()
+def get_department_exam_compliance():
+    """Get department exam-compliance data for the selected term/category."""
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+
+    if not current_user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
+        return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
+
+    if not current_user.department_id:
+        return jsonify({'success': False, 'message': 'User not assigned to a department'}), 400
+
+    category_id = request.args.get('category_id', type=int)
+    if not category_id:
+        return jsonify({'success': False, 'message': 'category_id is required'}), 400
+
+    result, status_code = DepartmentService.get_department_exam_compliance(
+        current_user.department_id,
+        category_id,
+    )
+    return jsonify(result), status_code
+
+
+@department_bp.route('/exam-compliance/remind', methods=['POST'])
+@jwt_required()
+def send_department_exam_compliance_reminders():
+    """Send follow-up notifications and emails to teachers with incomplete exam requirements."""
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+
+    if not current_user:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    if (current_user.role or '').lower() not in DEPARTMENT_ALLOWED_ROLES:
+        return jsonify({'success': False, 'message': 'Insufficient permissions'}), 403
+
+    if not current_user.department_id:
+        return jsonify({'success': False, 'message': 'User not assigned to a department'}), 400
+
+    data = request.get_json(silent=True) or {}
+    category_id = data.get('category_id')
+    teacher_ids = data.get('teacher_ids') or []
+
+    try:
+        category_id = int(category_id)
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'A valid category_id is required'}), 400
+
+    result, status_code = DepartmentService.send_department_exam_follow_up_reminders(
+        current_user.department_id,
+        category_id,
+        int(current_user_id),
+        teacher_ids=teacher_ids,
+    )
+    return jsonify(result), status_code
+
+
 @department_bp.route('/exams', methods=['GET'])
 @jwt_required()
 def get_my_department_exams():

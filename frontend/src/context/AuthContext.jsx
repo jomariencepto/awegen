@@ -9,6 +9,31 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
+const normalizeUser = (user) => {
+  if (!user) return null;
+
+  const departmentName =
+    user.department?.department_name ||
+    user.department_name ||
+    '';
+
+  const department =
+    user.department ||
+    (departmentName
+      ? {
+          department_id: user.department_id ?? null,
+          department_name: departmentName,
+        }
+      : null);
+
+  return {
+    ...user,
+    department,
+    department_name: departmentName || null,
+    role: getUserRole(user),
+  };
+};
+
 export function AuthProvider({ children }) {
   const [currentUser, setCurrentUser] = useState(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -42,11 +67,7 @@ export function AuthProvider({ children }) {
   const fetchCurrentUser = async () => {
     try {
       const response = await api.get('/auth/me', { skipAuthRefresh: true });
-
-      const formattedUser = {
-        ...response.data.user,
-        role: getUserRole(response.data.user)
-      };
+      const formattedUser = normalizeUser(response.data.user);
 
       setCurrentUser(formattedUser);
       setIsAuthenticated(true);
@@ -82,11 +103,7 @@ export function AuthProvider({ children }) {
         localStorage.setItem('token', response.data.access_token);
         api.defaults.headers.common['Authorization'] = `Bearer ${response.data.access_token}`;
       }
-
-      const formattedUser = {
-        ...user,
-        role: getUserRole(user)
-      };
+      const formattedUser = normalizeUser(user);
 
       setCurrentUser(formattedUser);
       setIsAuthenticated(true);
@@ -220,6 +237,7 @@ export function AuthProvider({ children }) {
     currentUser,
     isAuthenticated,
     loading,
+    refreshCurrentUser: fetchCurrentUser,
     login,
     register,
     verifyOTP,

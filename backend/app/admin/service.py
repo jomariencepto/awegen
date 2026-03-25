@@ -1,24 +1,70 @@
 from app.database import db
 from app.auth.models import User, Role
-from app.users.models import Department, School, Subject
+from app.auth.service import AuthService
+from app.admin.schemas import AdminCreateUserSchema, AdminAssignTeacherSubjectsSchema
+from app.users.models import Department, School, Subject, TeacherSubjectAssignment
+from app.users.service import UserService
 from app.exam.models import Exam, ExamCategory
 from app.utils.logger import get_logger
 from app.utils.exam_password import get_exam_download_password, set_exam_download_password
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
+from marshmallow import ValidationError
+from werkzeug.security import generate_password_hash
 
 logger = get_logger(__name__)
 
 
 class AdminService:
     @staticmethod
-    def get_all_users(page=1, per_page=10):
+    def _resolve_managed_role(requested_role):
+        """Resolve UI role labels to the actual role row stored in the database."""
+        normalized_role = str(requested_role or '').strip().lower()
+        role_candidates = {
+            'teacher': ['teacher'],
+            'department_head': ['department_head', 'department'],
+        }
+
+        for role_name in role_candidates.get(normalized_role, []):
+            role = Role.query.filter(func.lower(Role.role_name) == role_name.lower()).first()
+            if role:
+                return role
+
+        return None
+
+    @staticmethod
+    def get_all_users(page=1, per_page=10, search=''):
         """Get all users with pagination"""
         try:
-            users = User.query.paginate(
+            normalized_search = (search or '').strip().lower()
+            query = User.query
+
+            if normalized_search:
+                search_pattern = f"%{normalized_search}%"
+                query = query.filter(
+                    or_(
+                        func.lower(
+                            func.trim(
+                                func.coalesce(User.first_name, '') + ' ' + func.coalesce(User.last_name, '')
+                            )
+                        ).like(search_pattern),
+                        func.lower(func.coalesce(User.first_name, '')).like(search_pattern),
+                        func.lower(func.coalesce(User.last_name, '')).like(search_pattern),
+                        func.lower(func.coalesce(User.username, '')).like(search_pattern),
+                        func.lower(func.coalesce(User.email, '')).like(search_pattern),
+                        func.lower(func.coalesce(User.role, '')).like(search_pattern),
+                        func.lower(func.coalesce(User.department_name, '')).like(search_pattern),
+                    )
+                )
+
+            users = (
+                query
+                .order_by(User.created_at.desc(), User.user_id.desc())
+                .paginate(
                 page=page,
                 per_page=per_page,
                 error_out=False
+                )
             )
             
             return {
@@ -26,12 +72,300 @@ class AdminService:
                 'users': [user.to_dict() for user in users.items],
                 'total': users.total,
                 'pages': users.pages,
-                'current_page': users.page
+                'current_page': users.page,
+                'search': normalized_search,
             }, 200
             
         except Exception as e:
             logger.error(f"Error getting all users: {str(e)}")
             return {'success': False, 'message': 'Failed to get users'}, 500
+
+    @staticmethod
+    def get_teacher_subject_assignments(teacher_id):
+        try:
+            if not UserService._ensure_teacher_subject_assignments_table():
+                return {
+                    'success': False,
+                    'message': 'Failed to load teacher subject assignments'
+                }, 500
+
+            teacher = User.query.get(teacher_id)
+            if not teacher:
+                return {'success': False, 'message': 'Teacher not found'}, 404
+
+            if (teacher.role or '').strip().lower() != 'teacher':
+                return {'success': False, 'message': 'Selected user is not a teacher'}, 400
+
+            department = Department.query.get(teacher.department_id)
+            available_subject_rows = (
+                Subject.query
+                .join(Department, Subject.department_id == Department.department_id)
+                .order_by(Department.department_name.asc(), Subject.subject_name.asc())
+                .all()
+            )
+            assigned_subject_ids = UserService.get_teacher_assigned_subject_ids(
+                teacher.user_id,
+                ensure_table=False,
+            ) or set()
+
+            available_subjects = []
+            for subject in available_subject_rows:
+                subject_data = subject.to_dict()
+                subject_department = subject.department
+                subject_data['department_name'] = (
+                    subject_department.department_name if subject_department else None
+                )
+                available_subjects.append(subject_data)
+
+            return {
+                'success': True,
+                'teacher': teacher.to_dict(),
+                'available_subjects': available_subjects,
+                'assigned_subject_ids': sorted(assigned_subject_ids),
+                'department_id': teacher.department_id,
+                'department_name': (
+                    department.department_name if department else teacher.department_name
+                ),
+            }, 200
+
+        except Exception as e:
+            logger.error(f"Error getting teacher subject assignments: {str(e)}", exc_info=True)
+            return {'success': False, 'message': 'Failed to get teacher subjects'}, 500
+
+    @staticmethod
+    def update_teacher_subject_assignments(teacher_id, assignment_data, assigned_by=None):
+        try:
+            schema = AdminAssignTeacherSubjectsSchema()
+            validated_data = schema.load(assignment_data or {})
+        except ValidationError as err:
+            first_error = next(iter(err.messages.values()), ['Invalid input'])
+            message = first_error[0] if isinstance(first_error, list) and first_error else 'Invalid input'
+            return {'success': False, 'message': message, 'errors': err.messages}, 400
+
+        try:
+            if not UserService._ensure_teacher_subject_assignments_table():
+                return {
+                    'success': False,
+                    'message': 'Failed to save teacher subject assignments'
+                }, 500
+
+            teacher = User.query.get(teacher_id)
+            if not teacher:
+                return {'success': False, 'message': 'Teacher not found'}, 404
+
+            if (teacher.role or '').strip().lower() != 'teacher':
+                return {'success': False, 'message': 'Selected user is not a teacher'}, 400
+
+            requested_subject_ids = sorted({
+                int(subject_id)
+                for subject_id in (validated_data.get('subject_ids') or [])
+                if subject_id is not None
+            })
+
+            valid_subjects = []
+            if requested_subject_ids:
+                valid_subjects = Subject.query.filter(
+                    Subject.subject_id.in_(requested_subject_ids)
+                ).all()
+
+                if len(valid_subjects) != len(requested_subject_ids):
+                    found_ids = {int(subject.subject_id) for subject in valid_subjects}
+                    missing_ids = sorted(set(requested_subject_ids) - found_ids)
+                    return {
+                        'success': False,
+                        'message': f'One or more subjects were not found: {", ".join(map(str, missing_ids))}'
+                    }, 404
+
+            TeacherSubjectAssignment.query.filter_by(
+                teacher_id=teacher.user_id
+            ).delete(synchronize_session=False)
+
+            for subject_id in requested_subject_ids:
+                db.session.add(
+                    TeacherSubjectAssignment(
+                        teacher_id=teacher.user_id,
+                        subject_id=subject_id,
+                        assigned_by=assigned_by,
+                    )
+                )
+
+            db.session.commit()
+
+            result, status_code = AdminService.get_teacher_subject_assignments(teacher_id)
+            if status_code != 200:
+                return result, status_code
+
+            result['message'] = (
+                'Teacher subjects updated successfully'
+                if requested_subject_ids else
+                'Teacher subjects cleared successfully'
+            )
+            return result, 200
+
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error updating teacher subject assignments: {str(e)}", exc_info=True)
+            return {'success': False, 'message': 'Failed to update teacher subjects'}, 500
+
+    @staticmethod
+    def create_user_account(user_data, created_by=None):
+        """Create a teacher or department-head account from the admin panel."""
+        try:
+            schema = AdminCreateUserSchema()
+            validated_data = schema.load(user_data or {})
+        except ValidationError as err:
+            first_error = next(iter(err.messages.values()), ['Invalid input'])
+            message = first_error[0] if isinstance(first_error, list) and first_error else 'Invalid input'
+            return {'success': False, 'message': message, 'errors': err.messages}, 400
+
+        try:
+            email = (validated_data.get('email') or '').strip().lower()
+            first_name = (validated_data.get('first_name') or '').strip()
+            last_name = (validated_data.get('last_name') or '').strip()
+            password = validated_data.get('password') or ''
+            requested_role = validated_data.get('role')
+            school_id_number = int(validated_data.get('school_id_number'))
+            department_id = int(validated_data.get('department_id'))
+            requested_subject_ids = sorted({
+                int(subject_id)
+                for subject_id in (validated_data.get('subject_ids') or [])
+                if subject_id is not None
+            })
+            requested_active = bool(validated_data.get('is_active', True))
+
+            if not first_name or not AuthService.NAME_PATTERN.match(first_name):
+                return {'success': False, 'message': 'First name must contain letters only'}, 400
+
+            if not last_name or not AuthService.NAME_PATTERN.match(last_name):
+                return {'success': False, 'message': 'Last name must contain letters only'}, 400
+
+            is_valid_password, password_error = AuthService.validate_strong_password(password)
+            if not is_valid_password:
+                return {'success': False, 'message': password_error}, 400
+
+            role = AdminService._resolve_managed_role(requested_role)
+            if not role:
+                return {'success': False, 'message': 'Selected role is not available in the database'}, 400
+
+            is_teacher_account = (role.role_name or '').strip().lower() == 'teacher'
+            requires_department_approval = is_teacher_account and not requested_active
+            account_is_active = True if requires_department_approval else requested_active
+            account_is_approved = not requires_department_approval
+
+            school = School.query.get(school_id_number)
+            if not school:
+                return {'success': False, 'message': 'School not found'}, 404
+
+            department = Department.query.get(department_id)
+            if not department:
+                return {'success': False, 'message': 'Department not found'}, 404
+
+            if department.school_id_number != school_id_number:
+                return {
+                    'success': False,
+                    'message': 'Selected department does not belong to the selected school',
+                }, 400
+
+            valid_subjects = []
+            if is_teacher_account:
+                if not requested_subject_ids:
+                    return {
+                        'success': False,
+                        'message': 'Please assign at least one subject for this teacher',
+                    }, 400
+
+                valid_subjects = (
+                    Subject.query
+                    .filter(Subject.subject_id.in_(requested_subject_ids))
+                    .all()
+                )
+                if len(valid_subjects) != len(requested_subject_ids):
+                    found_ids = {subject.subject_id for subject in valid_subjects}
+                    missing_ids = sorted(set(requested_subject_ids) - found_ids)
+                    return {
+                        'success': False,
+                        'message': f'Invalid subject selection: {", ".join(map(str, missing_ids))}',
+                    }, 400
+
+            AuthService._purge_expired_unverified_registration(email=email)
+
+            existing_user = User.query.filter(func.lower(User.email) == email).first()
+            if existing_user:
+                return {'success': False, 'message': 'Email already registered'}, 409
+
+            username = AuthService.generate_username(email)
+            base_username = username
+            counter = 1
+            while User.query.filter_by(username=username).first():
+                username = f"{base_username}{counter}"
+                counter += 1
+
+            new_user = User(
+                email=email,
+                password_hash=generate_password_hash(password),
+                first_name=first_name,
+                last_name=last_name,
+                username=username,
+                role=role.role_name,
+                role_id=role.role_id,
+                school_id_number=school_id_number,
+                department_id=department.department_id,
+                department_name=department.department_name,
+                is_verified=True,
+                is_approved=account_is_approved,
+                is_active=account_is_active,
+            )
+
+            db.session.add(new_user)
+            db.session.flush()
+
+            if is_teacher_account:
+                if not UserService._ensure_teacher_subject_assignments_table():
+                    db.session.rollback()
+                    return {'success': False, 'message': 'Failed to save teacher subjects'}, 500
+
+                for subject_id in requested_subject_ids:
+                    db.session.add(TeacherSubjectAssignment(
+                        teacher_id=new_user.user_id,
+                        subject_id=subject_id,
+                        assigned_by=created_by,
+                    ))
+
+            db.session.commit()
+
+            created_role_label = 'Department Head' if requested_role == 'department_head' else 'Teacher'
+            if is_teacher_account and requires_department_approval:
+                message = (
+                    f'{created_role_label} account created successfully with {len(requested_subject_ids)} '
+                    f'assigned subject(s). Department approval is required before the teacher can log in.'
+                )
+            elif is_teacher_account:
+                message = (
+                    f'{created_role_label} account created successfully with {len(requested_subject_ids)} '
+                    f'assigned subject(s)'
+                )
+            elif not requested_active:
+                message = (
+                    f'{created_role_label} account created successfully as inactive. '
+                    f'Activate it later before first login.'
+                )
+            else:
+                message = f'{created_role_label} account created successfully'
+
+            return {
+                'success': True,
+                'message': message,
+                'user': new_user.to_dict(),
+                'requires_department_approval': requires_department_approval,
+            }, 201
+
+        except IntegrityError:
+            db.session.rollback()
+            return {'success': False, 'message': 'User with this information already exists'}, 409
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error creating admin-managed user account: {str(e)}", exc_info=True)
+            return {'success': False, 'message': 'Failed to create user account'}, 500
 
     @staticmethod
     def get_dashboard_stats():

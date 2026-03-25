@@ -21,6 +21,7 @@ const departmentNavigation = [
   { name: 'Exams Download', href: '/department/exams-download' },
   { name: 'Modules Bank', href: '/department/modules-bank' },
   { name: 'Manage Users', href: '/department/manage-users' },
+  { name: 'Exam Follow-Up', href: '/department/exam-compliance' },
   { name: 'Notifications', href: '/department/notifications' },
 ];
 

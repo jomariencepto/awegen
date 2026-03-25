@@ -103,7 +103,6 @@ function ManageExams() {
   const [exams, setExams] = useState([]);
   const [filteredExams, setFilteredExams] = useState([]);
   const [subjects, setSubjects] = useState([]);
-  const [departments, setDepartments] = useState([]); 
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -133,7 +132,6 @@ function ManageExams() {
     if (currentUser?.user_id && !hasFetched.current) {
       hasFetched.current = true;
       fetchExams();
-      fetchDepartments();
     }
   }, [currentUser]);
 
@@ -231,15 +229,6 @@ function ManageExams() {
     }
   };
 
-  const fetchDepartments = async () => {
-    try {
-      const res = await api.get('/departments');
-      setDepartments(res.data.departments || []);
-    } catch (err) {
-      console.error("Failed to load departments", err);
-    }
-  };
-
   const normalizeExamStatus = (status) => {
     if (!status) return 'draft';
     if (status === 'rejected') return 'revision_required';
@@ -300,7 +289,7 @@ function ManageExams() {
   const openSubmitModal = (exam) => {
     setSelectedExam(exam);
     setSubmitData({
-      department_id: '',
+      department_id: currentUser?.department_id ? String(currentUser.department_id) : '',
       instructor_notes: ''
     });
     setSubmitDialogOpen(true);
@@ -310,14 +299,14 @@ function ManageExams() {
     setSubmitDialogOpen(false);
     setSelectedExam(null);
     setSubmitData({
-      department_id: '',
+      department_id: currentUser?.department_id ? String(currentUser.department_id) : '',
       instructor_notes: ''
     });
   };
 
   const handleConfirmSubmit = async () => {
-    if (!submitData.department_id) {
-      toast.error("Please select a department");
+    if (!currentUser?.department_id) {
+      toast.error("Your teacher account is not assigned to a department");
       return;
     }
 
@@ -451,6 +440,7 @@ function ManageExams() {
   const pendingCount = exams.filter((e) => normalizeExamStatus(e.admin_status) === 'pending').length;
   const approvedCount = exams.filter((e) => normalizeExamStatus(e.admin_status) === 'approved').length;
   const revisionCount = exams.filter((e) => normalizeExamStatus(e.admin_status) === 'revision_required').length;
+  const teacherDepartmentLabel = currentUser?.department_name || 'No department assigned';
 
   if (isLoading) {
     return (
@@ -924,30 +914,14 @@ function ManageExams() {
               Department
               <span className="text-red-500">*</span>
             </Label>
-            <Select 
-              value={submitData.department_id} 
-              onValueChange={(val) => setSubmitData({...submitData, department_id: val})}
+            <div
+              id="department"
+              className="flex min-h-[44px] items-center rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-700"
             >
-              <SelectTrigger 
-                id="department" 
-                className="h-11 border-gray-300 focus:border-blue-500 focus:ring-blue-500"
-              >
-                <SelectValue placeholder="Select a department" />
-              </SelectTrigger>
-              <SelectContent style={{ zIndex: 10001 }} position="popper" sideOffset={5}>
-                {departments.length > 0 ? (
-                  departments.map(dept => (
-                    <SelectItem key={dept.department_id} value={String(dept.department_id)}>
-                      {dept.department_name}
-                    </SelectItem>
-                  ))
-                ) : (
-                  <SelectItem value="none" disabled>No departments available</SelectItem>
-                )}
-              </SelectContent>
-            </Select>
+              {teacherDepartmentLabel}
+            </div>
             <p className="text-xs text-gray-500 mt-1.5">
-              Choose the department that will review this exam
+              Teacher submissions are automatically routed to the teacher's own department
             </p>
           </div>
 
@@ -978,7 +952,7 @@ function ManageExams() {
           </Button>
           <Button 
             onClick={handleConfirmSubmit} 
-            disabled={isSubmitting || !submitData.department_id}
+            disabled={isSubmitting || !currentUser?.department_id}
             className="bg-blue-600 hover:bg-blue-700 text-white px-6 font-medium"
           >
             {isSubmitting ? (

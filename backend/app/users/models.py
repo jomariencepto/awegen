@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from app.database import db
 from app.auth.models import User
 
@@ -72,4 +74,80 @@ class Subject(db.Model):
             'department_id': self.department_id,
             'description': self.description,
             'created_at': self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class TeacherSubjectAssignment(db.Model):
+    __tablename__ = 'teacher_subject_assignments'
+    __table_args__ = (
+        db.UniqueConstraint(
+            'teacher_id',
+            'subject_id',
+            name='uq_teacher_subject_assignments_teacher_subject'
+        ),
+        db.Index('ix_teacher_subject_assignments_teacher_id', 'teacher_id'),
+        db.Index('ix_teacher_subject_assignments_subject_id', 'subject_id'),
+        {'extend_existing': True},
+    )
+
+    teacher_subject_assignment_id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    teacher_id = db.Column(
+        db.Integer,
+        db.ForeignKey('users.user_id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    subject_id = db.Column(
+        db.Integer,
+        db.ForeignKey('subjects.subject_id', ondelete='CASCADE'),
+        nullable=False,
+    )
+    assigned_by = db.Column(
+        db.Integer,
+        db.ForeignKey('users.user_id'),
+        nullable=True,
+    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    teacher = db.relationship(
+        'User',
+        foreign_keys=[teacher_id],
+        backref=db.backref(
+            'teacher_subject_assignments',
+            cascade='all, delete-orphan',
+            passive_deletes=True,
+        ),
+    )
+    subject = db.relationship(
+        'Subject',
+        foreign_keys=[subject_id],
+        backref=db.backref(
+            'teacher_assignments',
+            cascade='all, delete-orphan',
+            passive_deletes=True,
+        ),
+    )
+    assigned_by_user = db.relationship(
+        'User',
+        foreign_keys=[assigned_by],
+        backref='managed_teacher_subject_assignments',
+    )
+
+    def to_dict(self):
+        subject = self.subject
+        department = subject.department if subject else None
+        teacher = self.teacher
+
+        return {
+            'teacher_subject_assignment_id': self.teacher_subject_assignment_id,
+            'teacher_id': self.teacher_id,
+            'teacher_name': (
+                f"{(teacher.first_name or '').strip()} {(teacher.last_name or '').strip()}".strip()
+                if teacher else None
+            ),
+            'subject_id': self.subject_id,
+            'subject_name': subject.subject_name if subject else None,
+            'department_id': department.department_id if department else None,
+            'department_name': department.department_name if department else None,
+            'assigned_by': self.assigned_by,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
         }
