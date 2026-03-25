@@ -19,7 +19,7 @@ const getTeacherStatusVariant = (status) => {
   switch (status) {
     case 'completed':
       return 'success';
-    case 'in_progress':
+    case 'pending':
       return 'warning';
     case 'missing':
       return 'destructive';
@@ -180,7 +180,7 @@ function DepartmentExamCompliance() {
       },
       {
         key: 'in_progress_teachers',
-        label: 'In Progress',
+        label: 'Pending',
         value: Number(summary.in_progress_teachers) || 0,
         icon: Clock3,
       },

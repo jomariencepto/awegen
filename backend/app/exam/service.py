@@ -544,6 +544,27 @@ class ExamService:
         return None
 
     @staticmethod
+    def _get_department_review_recipients(department_id):
+        """Return active department reviewers for the given department."""
+        if not department_id:
+            return []
+
+        return User.query.filter(
+            User.department_id == department_id,
+            User.is_active.is_(True),
+            User.role.in_(['department', 'department_head'])
+        ).all()
+
+    @staticmethod
+    def _get_user_display_name(user, fallback='User'):
+        """Return a readable display name for email and notification copy."""
+        if not user:
+            return fallback
+
+        full_name = f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip()
+        return full_name or user.username or user.email or fallback
+
+    @staticmethod
     def _create_notifications_for_users(user_ids, notification_type, message):
         if not user_ids or not message:
             return 0
@@ -585,11 +606,7 @@ class ExamService:
                 )
                 return 0
 
-            recipients = User.query.filter(
-                User.department_id == department_id,
-                User.is_active.is_(True),
-                User.role.in_(['department', 'department_head'])
-            ).all()
+            recipients = ExamService._get_department_review_recipients(department_id)
             recipient_ids = [u.user_id for u in recipients]
             if not recipient_ids:
                 logger.warning(
@@ -598,9 +615,7 @@ class ExamService:
                 return 0
 
             teacher = exam.teacher or (User.query.get(exam.teacher_id) if exam.teacher_id else None)
-            teacher_name = "A teacher"
-            if teacher:
-                teacher_name = f"{teacher.first_name or ''} {teacher.last_name or ''}".strip() or teacher.username
+            teacher_name = ExamService._get_user_display_name(teacher, 'A teacher')
 
             message = f'{teacher_name} submitted exam "{exam.title}" for review.'
             return ExamService._create_notifications_for_users(
@@ -623,11 +638,7 @@ class ExamService:
                 )
                 return 0
 
-            recipients = User.query.filter(
-                User.department_id == department_id,
-                User.is_active.is_(True),
-                User.role.in_(['department', 'department_head'])
-            ).all()
+            recipients = ExamService._get_department_review_recipients(department_id)
             recipient_ids = [u.user_id for u in recipients]
             if not recipient_ids:
                 logger.warning(
@@ -636,9 +647,7 @@ class ExamService:
                 return 0
 
             sender = User.query.get(sender_id)
-            sender_name = "A user"
-            if sender:
-                sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip() or sender.username
+            sender_name = ExamService._get_user_display_name(sender, 'A user')
 
             message = f'{sender_name} sent exam "{exam.title}" to your department for review.'
             return ExamService._create_notifications_for_users(
@@ -648,6 +657,74 @@ class ExamService:
             )
         except Exception as notify_err:
             logger.error(f"Failed to queue department send notification: {str(notify_err)}")
+            return 0
+
+    @staticmethod
+    def _send_department_exam_submission_emails(exam, sender_id=None, action_label='submitted', notes=None):
+        """Send email notifications to department reviewers for a submitted exam."""
+        try:
+            if not exam:
+                return 0
+
+            department_id = exam.department_id or ExamService._resolve_exam_department_id(exam)
+            if not department_id:
+                logger.warning(
+                    f"Email notification skipped for exam {getattr(exam, 'exam_id', 'unknown')}: no destination department"
+                )
+                return 0
+
+            recipients = ExamService._get_department_review_recipients(department_id)
+            if not recipients:
+                logger.warning(
+                    f"Email notification skipped for exam {exam.exam_id}: no active department recipients in department {department_id}"
+                )
+                return 0
+
+            sender = (
+                User.query.get(sender_id)
+                if sender_id
+                else (exam.teacher or (User.query.get(exam.teacher_id) if exam.teacher_id else None))
+            )
+            sender_name = ExamService._get_user_display_name(sender, 'A teacher')
+            department_name = (
+                (exam.department.department_name if exam.department else None)
+                or (recipients[0].department.department_name if recipients[0].department else None)
+                or 'your department'
+            )
+            note_text = str(notes or '').strip()
+
+            from app.utils.email_service import send_exam_submission_email
+
+            emailed_count = 0
+            seen_emails = set()
+            for recipient in recipients:
+                recipient_email = str(recipient.email or '').strip()
+                recipient_email_key = recipient_email.lower()
+                if not recipient_email or recipient_email_key in seen_emails:
+                    continue
+
+                seen_emails.add(recipient_email_key)
+                recipient_name = ExamService._get_user_display_name(recipient, recipient_email)
+                email_sent = bool(
+                    send_exam_submission_email(
+                        to_email=recipient_email,
+                        full_name=recipient_name,
+                        sender_name=sender_name,
+                        exam_title=exam.title,
+                        department_name=department_name,
+                        action_label=action_label,
+                        notes=note_text,
+                    )
+                )
+                if email_sent:
+                    emailed_count += 1
+
+            return emailed_count
+        except Exception as exc:
+            logger.error(
+                f"Failed to send department submission email for exam {getattr(exam, 'exam_id', 'unknown')}: {exc}",
+                exc_info=True,
+            )
             return 0
 
     @staticmethod
@@ -1647,6 +1724,15 @@ class ExamService:
 
             # Commit changes
             db.session.commit()
+
+            emailed_count = ExamService._send_department_exam_submission_emails(
+                exam=exam,
+                sender_id=exam.teacher_id,
+                action_label='submitted',
+                notes=exam.instructor_notes,
+            )
+            if emailed_count:
+                logger.info(f"Sent {emailed_count} department submission email(s) for exam {exam_id}")
             
             logger.info(f"✅ Exam {exam_id} '{exam.title}' submitted successfully")
             logger.info(f"✅ Status: submitted_to_admin={exam.submitted_to_admin}, admin_status={exam.admin_status}")
@@ -1654,7 +1740,8 @@ class ExamService:
             return {
                 'success': True,
                 'message': 'Exam submitted for approval successfully',
-                'exam': exam.to_dict()
+                'exam': exam.to_dict(),
+                'emailed_count': emailed_count,
             }, 200
             
         except ValidationError as e:
@@ -1826,13 +1913,23 @@ class ExamService:
             notified_count = ExamService._notify_department_exam_sent(exam, sender_id)
             if notified_count:
                 logger.info(f"Queued {notified_count} department send notification(s) for exam {exam_id}")
-            
+             
             db.session.commit()
-            
+
+            emailed_count = ExamService._send_department_exam_submission_emails(
+                exam=exam,
+                sender_id=sender_id,
+                action_label='sent',
+                notes=exam.department_notes,
+            )
+            if emailed_count:
+                logger.info(f"Sent {emailed_count} department send email(s) for exam {exam_id}")
+             
             return {
                 'success': True,
                 'message': 'Exam sent to department successfully',
-                'exam': exam.to_dict()
+                'exam': exam.to_dict(),
+                'emailed_count': emailed_count,
             }, 200
             
         except Exception as e:

@@ -168,6 +168,38 @@ class EmailService:
         logger.info(f"Sending exam decision email to {to_email} for status {normalized_status}")
         return self.send_email(to_email, subject, body_html, body_text)
 
+    def send_exam_submission_email(
+        self,
+        to_email,
+        full_name=None,
+        sender_name=None,
+        exam_title=None,
+        department_name=None,
+        action_label="submitted",
+        notes=None,
+    ):
+        """Send department email when an exam is submitted for review."""
+        subject = "New exam pending department review - AWEGen"
+        body_html = self._get_exam_submission_email_html(
+            full_name=full_name,
+            sender_name=sender_name,
+            exam_title=exam_title,
+            department_name=department_name,
+            action_label=action_label,
+            notes=notes,
+        )
+        body_text = self._get_exam_submission_email_text(
+            full_name=full_name,
+            sender_name=sender_name,
+            exam_title=exam_title,
+            department_name=department_name,
+            action_label=action_label,
+            notes=notes,
+        )
+
+        logger.info(f"Sending exam submission email to {to_email} for exam {exam_title}")
+        return self.send_email(to_email, subject, body_html, body_text)
+
     def send_exam_follow_up_email(
         self,
         to_email,
@@ -574,6 +606,182 @@ Copyright 2026 AWEGen - AI-Assisted Written Exam Generator
             return f'Your exam "{safe_title}" was rejected by the {reviewer}.'
         return f'Your exam "{safe_title}" has a new review update from the {reviewer}.'
 
+    def _get_exam_submission_intro(self, sender_name, exam_title, department_name, action_label):
+        safe_sender = (sender_name or "A teacher").strip() or "A teacher"
+        safe_title = (exam_title or "Untitled Exam").strip()
+        safe_department = (department_name or "your department").strip() or "your department"
+        normalized_action = str(action_label or "").strip().lower()
+
+        if normalized_action == "sent":
+            return f'{safe_sender} sent the exam "{safe_title}" to {safe_department} for review.'
+        return f'{safe_sender} submitted the exam "{safe_title}" to {safe_department} for review.'
+
+    def _get_exam_submission_email_html(
+        self,
+        full_name=None,
+        sender_name=None,
+        exam_title=None,
+        department_name=None,
+        action_label="submitted",
+        notes=None,
+    ):
+        """Generate HTML email body for department exam submission notifications."""
+        safe_name = (full_name or "").strip() or "Reviewer"
+        safe_title = (exam_title or "Untitled Exam").strip()
+        safe_department = (department_name or "your department").strip() or "your department"
+        intro_text = self._get_exam_submission_intro(sender_name, safe_title, safe_department, action_label)
+        note_text = (notes or "").strip()
+        login_line = self._get_login_line_html("Open AWEGen here:")
+        notes_block = (
+            f"""
+                <div class="notes">
+                    <div class="notes-title">Submission Notes</div>
+                    <div>{note_text}</div>
+                </div>
+            """
+            if note_text
+            else ""
+        )
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }}
+                .container {{
+                    background-color: #f9f9f9;
+                    border-radius: 10px;
+                    padding: 30px;
+                    border: 1px solid #ddd;
+                }}
+                .header {{
+                    text-align: center;
+                    margin-bottom: 24px;
+                }}
+                .logo {{
+                    font-size: 32px;
+                    font-weight: bold;
+                    color: #EAB308;
+                    margin-bottom: 10px;
+                }}
+                .status {{
+                    background-color: #eff6ff;
+                    border: 1px solid #60a5fa;
+                    color: #1d4ed8;
+                    border-radius: 8px;
+                    padding: 14px;
+                    margin: 20px 0;
+                    font-weight: 600;
+                }}
+                .details {{
+                    background-color: #ffffff;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 8px;
+                    padding: 14px;
+                    margin: 20px 0;
+                }}
+                .details-title {{
+                    font-weight: 700;
+                    margin-bottom: 8px;
+                }}
+                .notes {{
+                    background-color: #ffffff;
+                    border: 1px solid #e5e7eb;
+                    border-radius: 8px;
+                    padding: 14px;
+                    margin: 20px 0;
+                }}
+                .notes-title {{
+                    font-weight: 700;
+                    margin-bottom: 8px;
+                }}
+                .footer {{
+                    text-align: center;
+                    margin-top: 30px;
+                    font-size: 12px;
+                    color: #666;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <div class="logo">AWEGen</div>
+                    <h2 style="color: #333; margin: 0;">Exam Submission Notification</h2>
+                </div>
+
+                <p>Hello {safe_name},</p>
+                <p>{intro_text}</p>
+
+                <div class="status">
+                    Status: Pending Department Review
+                </div>
+
+                <div class="details">
+                    <div class="details-title">Exam Details</div>
+                    <div><strong>Exam Title:</strong> {safe_title}</div>
+                    <div><strong>Department:</strong> {safe_department}</div>
+                </div>
+
+                {notes_block}
+
+                <p>Please open AWEGen to review the submitted exam.</p>
+
+                {login_line}
+
+                <div class="footer">
+                    <p>This is an automated message from AWEGen.<br>
+                    Please do not reply to this email.</p>
+                    <p>&copy; 2026 AWEGen - AI-Assisted Written Exam Generator</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+    def _get_exam_submission_email_text(
+        self,
+        full_name=None,
+        sender_name=None,
+        exam_title=None,
+        department_name=None,
+        action_label="submitted",
+        notes=None,
+    ):
+        """Generate plain text email body for department exam submission notifications."""
+        safe_name = (full_name or "").strip() or "Reviewer"
+        safe_title = (exam_title or "Untitled Exam").strip()
+        safe_department = (department_name or "your department").strip() or "your department"
+        intro_text = self._get_exam_submission_intro(sender_name, safe_title, safe_department, action_label)
+        note_text = (notes or "").strip()
+        login_line = self._get_login_line_text()
+        notes_block = f"\nSubmission Notes:\n{note_text}\n" if note_text else "\n"
+
+        return f"""
+AWEGen - Exam Submission Notification
+
+Hello {safe_name},
+
+{intro_text}
+
+Status: Pending Department Review
+Exam Title: {safe_title}
+Department: {safe_department}
+{notes_block}
+Please open AWEGen to review the submitted exam.
+
+{login_line}This is an automated message from AWEGen.
+Copyright 2026 AWEGen - AI-Assisted Written Exam Generator
+        """
+
     def _get_exam_decision_email_html(
         self,
         full_name=None,
@@ -917,6 +1125,27 @@ def send_exam_decision_email(
         decision_status=decision_status,
         feedback=feedback,
         reviewer_label=reviewer_label,
+    )
+
+
+def send_exam_submission_email(
+    to_email,
+    full_name=None,
+    sender_name=None,
+    exam_title=None,
+    department_name=None,
+    action_label="submitted",
+    notes=None,
+):
+    """Convenience function to send department exam submission notification email."""
+    return email_service.send_exam_submission_email(
+        to_email=to_email,
+        full_name=full_name,
+        sender_name=sender_name,
+        exam_title=exam_title,
+        department_name=department_name,
+        action_label=action_label,
+        notes=notes,
     )
 
 

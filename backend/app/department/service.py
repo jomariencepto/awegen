@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 class DepartmentService:
     EXAM_FOLLOW_UP_STATUS_META = {
         'approved': {'label': 'Approved', 'variant': 'success', 'priority': 6},
-        'submitted': {'label': 'Submitted', 'variant': 'default', 'priority': 5},
+        'pending': {'label': 'Pending', 'variant': 'default', 'priority': 5},
         'revision_required': {'label': 'Needs Revision', 'variant': 'warning', 'priority': 4},
         'rejected': {'label': 'Rejected', 'variant': 'destructive', 'priority': 3},
         'draft': {'label': 'Draft', 'variant': 'secondary', 'priority': 2},
@@ -26,7 +26,7 @@ class DepartmentService:
 
     TEACHER_COMPLIANCE_STATUS_META = {
         'completed': {'label': 'Completed', 'variant': 'success'},
-        'in_progress': {'label': 'In Progress', 'variant': 'warning'},
+        'pending': {'label': 'Pending', 'variant': 'warning'},
         'missing': {'label': 'Missing', 'variant': 'destructive'},
     }
 
@@ -41,7 +41,7 @@ class DepartmentService:
             or getattr(exam, 'sent_to_department', False)
             or normalized_status == 'pending'
         ):
-            return 'submitted'
+            return 'pending'
         if normalized_status == 'revision_required':
             return 'revision_required'
         if normalized_status == 'rejected':
@@ -58,15 +58,15 @@ class DepartmentService:
             return (
                 f'Reminder: you still need to create your {safe_category} exam for {safe_department}.'
             )
-        if teacher_status == 'in_progress':
+        if teacher_status == 'pending':
             if safe_exam_title:
                 return (
                     f'Reminder: your {safe_category} exam "{safe_exam_title}" for {safe_department} '
-                    f'is still in progress. Please finish or submit it.'
+                    f'has not been approved yet. Please check the review status and update it if needed.'
                 )
             return (
-                f'Reminder: your {safe_category} exam for {safe_department} is still in progress. '
-                f'Please finish or submit it.'
+                f'Reminder: your {safe_category} exam for {safe_department} has not been approved yet. '
+                f'Please check the review status and update it if needed.'
             )
         return (
             f'Reminder: please check your {safe_category} exam requirements for {safe_department}.'
@@ -93,12 +93,12 @@ class DepartmentService:
             exam_title = selected_exam.get('exam_title')
             latest_activity_at = selected_exam.get('latest_activity_at')
 
-        if exam_status in {'approved', 'submitted'}:
+        if exam_status == 'approved':
             teacher_status = 'completed'
-        elif exam_status == 'missing':
+        elif exam_status in {'missing', 'draft'}:
             teacher_status = 'missing'
         else:
-            teacher_status = 'in_progress'
+            teacher_status = 'pending'
 
         teacher_status_meta = DepartmentService.TEACHER_COMPLIANCE_STATUS_META[teacher_status]
         teacher_data = teacher.to_dict()
@@ -111,9 +111,9 @@ class DepartmentService:
             'teacher_status_variant': teacher_status_meta['variant'],
             'expected_exam_count': 1,
             'created_exam_count': 0 if exam_status == 'missing' else 1,
-            'submitted_exam_count': 1 if exam_status in {'approved', 'submitted'} else 0,
-            'incomplete_exam_count': 0 if exam_status in {'approved', 'submitted'} else 1,
-            'needs_follow_up': teacher_status in {'missing', 'in_progress'},
+            'submitted_exam_count': 1 if exam_status in {'approved', 'pending', 'revision_required', 'rejected'} else 0,
+            'incomplete_exam_count': 0 if exam_status == 'approved' else 1,
+            'needs_follow_up': teacher_status in {'missing', 'pending'},
             'exam_status': exam_status,
             'exam_status_label': exam_status_label,
             'exam_status_variant': exam_status_variant,
@@ -604,7 +604,7 @@ class DepartmentService:
 
                 if teacher_summary['teacher_status'] == 'completed':
                     summary['completed_teachers'] += 1
-                elif teacher_summary['teacher_status'] == 'in_progress':
+                elif teacher_summary['teacher_status'] == 'pending':
                     summary['in_progress_teachers'] += 1
                 elif teacher_summary['teacher_status'] == 'missing':
                     summary['missing_teachers'] += 1
