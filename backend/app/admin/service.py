@@ -5,6 +5,7 @@ from app.admin.schemas import AdminCreateUserSchema, AdminAssignTeacherSubjectsS
 from app.users.models import Department, School, Subject, TeacherSubjectAssignment
 from app.users.service import UserService
 from app.exam.models import Exam, ExamCategory
+from app.notifications.models import Notification
 from app.utils.logger import get_logger
 from app.utils.exam_password import get_exam_download_password, set_exam_download_password
 from sqlalchemy import func, or_
@@ -16,6 +17,39 @@ logger = get_logger(__name__)
 
 
 class AdminService:
+    @staticmethod
+    def _managed_role_label(requested_role, fallback_role_name=None):
+        normalized = str(requested_role or fallback_role_name or '').strip().lower()
+        if normalized in {'department_head', 'department'}:
+            return 'Department Head'
+        return 'Teacher'
+
+    @staticmethod
+    def _build_account_created_notification_message(
+        role_label,
+        department_name='',
+        is_active=True,
+        is_approved=True,
+    ):
+        department_suffix = f" for {department_name}" if department_name else ""
+
+        if not is_active:
+            return (
+                f"Your {role_label} account{department_suffix} was created by admin. "
+                "It is currently inactive. Please wait for activation before signing in."
+            )
+
+        if not is_approved:
+            return (
+                f"Your {role_label} account{department_suffix} was created by admin. "
+                "It is waiting for department approval before you can sign in."
+            )
+
+        return (
+            f"Your {role_label} account{department_suffix} was created by admin. "
+            "You can now sign in using your registered email."
+        )
+
     @staticmethod
     def _resolve_managed_role(requested_role):
         """Resolve UI role labels to the actual role row stored in the database."""
@@ -331,9 +365,20 @@ class AdminService:
                         assigned_by=created_by,
                     ))
 
+            created_role_label = AdminService._managed_role_label(requested_role, role.role_name)
+            db.session.add(Notification(
+                user_id=new_user.user_id,
+                type='account_created',
+                text=AdminService._build_account_created_notification_message(
+                    role_label=created_role_label,
+                    department_name=department.department_name,
+                    is_active=account_is_active,
+                    is_approved=account_is_approved,
+                )
+            ))
+
             db.session.commit()
 
-            created_role_label = 'Department Head' if requested_role == 'department_head' else 'Teacher'
             if is_teacher_account and requires_department_approval:
                 message = (
                     f'{created_role_label} account created successfully with {len(requested_subject_ids)} '
@@ -352,12 +397,51 @@ class AdminService:
             else:
                 message = f'{created_role_label} account created successfully'
 
-            return {
+            email_notification_sent = None
+            if new_user.email:
+                try:
+                    from app.utils.email_service import send_account_created_email
+
+                    full_name = f"{(new_user.first_name or '').strip()} {(new_user.last_name or '').strip()}".strip()
+                    if not full_name:
+                        full_name = new_user.email
+
+                    email_notification_sent = bool(
+                        send_account_created_email(
+                            to_email=new_user.email,
+                            full_name=full_name,
+                            role_name='department_head' if created_role_label == 'Department Head' else 'teacher',
+                            department_name=department.department_name,
+                            is_active=account_is_active,
+                            is_approved=account_is_approved,
+                        )
+                    )
+                    if email_notification_sent:
+                        message = f'{message}. Account email notification sent.'
+                    else:
+                        message = f'{message}. Account email notification could not be sent.'
+                        logger.warning(
+                            f"User account created for user_id={new_user.user_id}, "
+                            "but the account-created email was not sent."
+                        )
+                except Exception as email_error:
+                    email_notification_sent = False
+                    message = f'{message}. Account email notification could not be sent.'
+                    logger.error(
+                        f"User account created for user_id={new_user.user_id}, "
+                        f"but failed to send account-created email: {str(email_error)}"
+                    )
+
+            response = {
                 'success': True,
                 'message': message,
                 'user': new_user.to_dict(),
                 'requires_department_approval': requires_department_approval,
-            }, 201
+            }
+            if email_notification_sent is not None:
+                response['email_notification_sent'] = email_notification_sent
+
+            return response, 201
 
         except IntegrityError:
             db.session.rollback()

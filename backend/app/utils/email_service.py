@@ -124,6 +124,35 @@ class EmailService:
         logger.info(f"Sending account approval email to {to_email}")
         return self.send_email(to_email, subject, body_html, body_text)
 
+    def send_account_created_email(
+        self,
+        to_email,
+        full_name=None,
+        role_name="teacher",
+        department_name=None,
+        is_active=True,
+        is_approved=True,
+    ):
+        """Send account created notification email."""
+        subject = "Welcome to AWEGen"
+        body_html = self._get_account_created_email_html(
+            full_name=full_name,
+            role_name=role_name,
+            department_name=department_name,
+            is_active=is_active,
+            is_approved=is_approved,
+        )
+        body_text = self._get_account_created_email_text(
+            full_name=full_name,
+            role_name=role_name,
+            department_name=department_name,
+            is_active=is_active,
+            is_approved=is_approved,
+        )
+
+        logger.info(f"Sending account created email to {to_email}")
+        return self.send_email(to_email, subject, body_html, body_text)
+
     def send_email_change_confirmation_email(self, to_email, full_name=None, role_name="teacher"):
         """Send email change confirmation notification."""
         subject = "Your AWEGen email was updated"
@@ -476,6 +505,178 @@ Your {safe_role} account in AWEGen has been approved.
 You can now access the system using your registered email and password.
 
 {login_line}If you did not request this account, please contact your administrator.
+
+---
+This is an automated message from AWEGen.
+Copyright 2026 AWEGen - AI-Assisted Written Exam Generator
+        """
+
+    def _get_account_created_email_html(
+        self,
+        full_name=None,
+        role_name="teacher",
+        department_name=None,
+        is_active=True,
+        is_approved=True,
+    ):
+        """Generate HTML email body for account creation notification."""
+        safe_name = (full_name or "").strip() or "User"
+        safe_role = (role_name or "teacher").replace("_", " ").title()
+        safe_department = (department_name or "").strip()
+
+        if not is_active:
+            status_title = "Welcome to AWEGen"
+            status_class = "background-color: #f8fafc; border: 1px solid #94a3b8; color: #334155;"
+            status_message = "Welcome to AWEGen. Your account has been created, but it is currently inactive."
+            next_step = (
+                "Your administrator needs to activate your account before you can sign in."
+            )
+            login_line = self._get_login_line_html("Once activated, you can sign in here:")
+        elif not is_approved:
+            status_title = "Welcome to AWEGen"
+            status_class = "background-color: #fffbeb; border: 1px solid #f59e0b; color: #92400e;"
+            status_message = "Welcome to AWEGen. Your account has been created and is waiting for department approval."
+            next_step = (
+                "You will be able to sign in after the selected department approves your account."
+            )
+            login_line = self._get_login_line_html("After approval, you can sign in here:")
+        else:
+            status_title = "Welcome to AWEGen"
+            status_class = "background-color: #ecfdf5; border: 1px solid #10b981; color: #065f46;"
+            status_message = "Welcome to AWEGen. Your account has been created and is ready to use."
+            next_step = (
+                "You can now sign in using your registered email and the password provided by your administrator."
+            )
+            login_line = self._get_login_line_html("You can sign in here:")
+
+        department_block = (
+            f"""
+                <div style="background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 14px; margin: 16px 0;">
+                    <strong>Department:</strong> {safe_department}
+                </div>
+            """
+            if safe_department
+            else ""
+        )
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <style>
+                body {{
+                    font-family: Arial, sans-serif;
+                    line-height: 1.6;
+                    color: #333;
+                    max-width: 600px;
+                    margin: 0 auto;
+                    padding: 20px;
+                }}
+                .container {{
+                    background-color: #f9f9f9;
+                    border-radius: 10px;
+                    padding: 30px;
+                    border: 1px solid #ddd;
+                }}
+                .header {{
+                    text-align: center;
+                    margin-bottom: 24px;
+                }}
+                .logo {{
+                    font-size: 32px;
+                    font-weight: bold;
+                    color: #EAB308;
+                    margin-bottom: 10px;
+                }}
+                .status {{
+                    border-radius: 8px;
+                    padding: 14px;
+                    margin: 20px 0;
+                }}
+                .footer {{
+                    text-align: center;
+                    margin-top: 30px;
+                    font-size: 12px;
+                    color: #666;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <div class="logo">AWEGen</div>
+                    <h2 style="color: #333; margin: 0;">{status_title}</h2>
+                </div>
+
+                <p>Hello {safe_name},</p>
+                <p>Welcome!</p>
+                <p>Your <strong>{safe_role}</strong> account in AWEGen has been created by the administrator.</p>
+
+                {department_block}
+
+                <div class="status" style="{status_class}">
+                    {status_message}
+                </div>
+
+                <p>{next_step}</p>
+
+                {login_line}
+
+                <p>If you were not expecting this account, please contact your administrator.</p>
+
+                <div class="footer">
+                    <p>This is an automated message from AWEGen.<br>
+                    Please do not reply to this email.</p>
+                    <p>&copy; 2026 AWEGen - AI-Assisted Written Exam Generator</p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+    def _get_account_created_email_text(
+        self,
+        full_name=None,
+        role_name="teacher",
+        department_name=None,
+        is_active=True,
+        is_approved=True,
+    ):
+        """Generate plain text email body for account creation notification."""
+        safe_name = (full_name or "").strip() or "User"
+        safe_role = (role_name or "teacher").replace("_", " ").title()
+        safe_department = (department_name or "").strip()
+
+        if not is_active:
+            status_message = "Welcome to AWEGen. Your account has been created, but it is currently inactive."
+            next_step = "Your administrator needs to activate your account before you can sign in."
+            login_line = "Once activated, " + self._get_login_line_text().lower()
+        elif not is_approved:
+            status_message = "Welcome to AWEGen. Your account has been created and is waiting for department approval."
+            next_step = "You will be able to sign in after the selected department approves your account."
+            login_line = "After approval, " + self._get_login_line_text().lower()
+        else:
+            status_message = "Welcome to AWEGen. Your account has been created and is ready to use."
+            next_step = (
+                "You can now sign in using your registered email and the password provided by your administrator."
+            )
+            login_line = self._get_login_line_text()
+
+        department_line = f"Department: {safe_department}\n\n" if safe_department else ""
+
+        return f"""
+AWEGen - Welcome
+
+Hello {safe_name},
+
+Welcome!
+
+Your {safe_role} account in AWEGen has been created by the administrator.
+
+{department_line}{status_message}
+{next_step}
+
+{login_line}If you were not expecting this account, please contact your administrator.
 
 ---
 This is an automated message from AWEGen.
@@ -1097,6 +1298,25 @@ def send_account_approval_email(to_email, full_name=None, role_name="teacher"):
         to_email=to_email,
         full_name=full_name,
         role_name=role_name,
+    )
+
+
+def send_account_created_email(
+    to_email,
+    full_name=None,
+    role_name="teacher",
+    department_name=None,
+    is_active=True,
+    is_approved=True,
+):
+    """Convenience function to send account created notification email."""
+    return email_service.send_account_created_email(
+        to_email=to_email,
+        full_name=full_name,
+        role_name=role_name,
+        department_name=department_name,
+        is_active=is_active,
+        is_approved=is_approved,
     )
 
 
