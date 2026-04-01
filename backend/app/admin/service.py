@@ -537,6 +537,7 @@ class AdminService:
                 'settings': {
                     'is_configured': bool(password),
                     'masked_password': masked_password,
+                    'current_password': password,
                     'min_password_length': 4,
                 }
             }, 200

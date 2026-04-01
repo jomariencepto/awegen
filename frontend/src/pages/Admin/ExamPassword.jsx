@@ -9,11 +9,13 @@ import api from '../../utils/api';
 function ExamPassword() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [status, setStatus] = useState({
     is_configured: false,
     masked_password: '',
+    current_password: '',
     min_password_length: 4,
   });
   const [form, setForm] = useState({
@@ -30,8 +32,10 @@ function ExamPassword() {
       setStatus({
         is_configured: Boolean(settings.is_configured),
         masked_password: settings.masked_password || '',
+        current_password: settings.current_password || '',
         min_password_length: Number(settings.min_password_length) || 4,
       });
+      setShowCurrentPassword(false);
     } catch (error) {
       setMessage({
         type: 'error',
@@ -75,6 +79,7 @@ function ExamPassword() {
         text: response.data?.message || 'Exam password updated successfully.',
       });
       setForm({ password: '', confirm_password: '' });
+      setShowCurrentPassword(false);
       setShowPassword(false);
       setShowConfirmPassword(false);
       await loadSettings();
@@ -127,9 +132,33 @@ function ExamPassword() {
             {loading ? 'Loading...' : status.is_configured ? 'Yes' : 'No'}
           </p>
           {status.is_configured && (
-            <p>
-              <span className="font-medium">Current (masked):</span> {status.masked_password}
-            </p>
+            <div className="space-y-2">
+              <p>
+                <span className="font-medium">
+                  {showCurrentPassword ? 'Current Password:' : 'Current (masked):'}
+                </span>{' '}
+                {showCurrentPassword ? status.current_password : status.masked_password}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={() => setShowCurrentPassword((prev) => !prev)}
+              >
+                {showCurrentPassword ? (
+                  <>
+                    <EyeOff className="h-4 w-4" />
+                    Hide Password
+                  </>
+                ) : (
+                  <>
+                    <Eye className="h-4 w-4" />
+                    Show Password
+                  </>
+                )}
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
@@ -141,7 +170,18 @@ function ExamPassword() {
             Enter a new password and confirm it. You can show or hide password text.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-4 text-sm text-amber-900">
+            <p className="font-semibold">Forgot password?</p>
+            <p className="mt-1">
+              If you forgot the current exam password, use the Show Password button above or save a
+              new password here.
+            </p>
+            <p className="mt-1">
+              Already exported files keep the old password. New exported files will use the new
+              password.
+            </p>
+          </div>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="exam_password">New Exam Password</Label>
