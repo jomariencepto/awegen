@@ -12,6 +12,9 @@ import api from '../../utils/api';
 const selectClassName =
   'flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-yellow-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
 
+const FIXED_SCHOOL_NAME = 'Pambayang Dalubhasaan ng Marilao';
+const normalizeSchoolName = (value) => String(value || '').trim().toLowerCase();
+
 const initialCreateForm = {
   first_name: '',
   last_name: '',
@@ -105,42 +108,56 @@ function UsersList() {
     return () => clearTimeout(timer);
   }, [search]);
 
+  const fixedSchool = useMemo(
+    () =>
+      schools.find(
+        (school) =>
+          normalizeSchoolName(school.school_name) === normalizeSchoolName(FIXED_SCHOOL_NAME)
+      ) || null,
+    [schools]
+  );
+
+  const fixedSchoolId = fixedSchool ? String(fixedSchool.school_id_number) : '';
+
   useEffect(() => {
-    if (!schools.length) return;
+    if (lookupLoading) return;
 
     setCreateForm((prev) => {
-      const hasValidSchool = schools.some(
-        (school) => String(school.school_id_number) === String(prev.school_id_number)
-      );
-      const nextSchoolId = hasValidSchool
-        ? String(prev.school_id_number)
-        : String(schools[0].school_id_number);
-      const matchingDepartments = departments.filter(
-        (department) => String(department.school_id_number) === nextSchoolId
-      );
+      const matchingDepartments = fixedSchoolId
+        ? departments.filter(
+            (department) => String(department.school_id_number) === String(fixedSchoolId)
+          )
+        : [];
       const hasValidDepartment = matchingDepartments.some(
         (department) => String(department.department_id) === String(prev.department_id)
       );
+      const nextDepartmentId = hasValidDepartment
+        ? String(prev.department_id)
+        : matchingDepartments[0]
+          ? String(matchingDepartments[0].department_id)
+          : '';
+
+      if (
+        String(prev.school_id_number || '') === String(fixedSchoolId) &&
+        String(prev.department_id || '') === String(nextDepartmentId)
+      ) {
+        return prev;
+      }
 
       return {
         ...prev,
-        school_id_number: nextSchoolId,
-        department_id: hasValidDepartment
-          ? String(prev.department_id)
-          : matchingDepartments[0]
-            ? String(matchingDepartments[0].department_id)
-            : '',
+        school_id_number: fixedSchoolId,
+        department_id: nextDepartmentId,
       };
     });
-  }, [schools, departments]);
+  }, [departments, fixedSchoolId, lookupLoading]);
 
   const filteredDepartments = useMemo(() => {
-    if (!createForm.school_id_number) return departments;
+    if (!fixedSchoolId) return [];
     return departments.filter(
-      (department) =>
-        String(department.school_id_number) === String(createForm.school_id_number)
+      (department) => String(department.school_id_number) === String(fixedSchoolId)
     );
-  }, [departments, createForm.school_id_number]);
+  }, [departments, fixedSchoolId]);
 
   const selectedCreateDepartment = useMemo(
     () =>
@@ -153,6 +170,7 @@ function UsersList() {
   const createAvailableSubjects = useMemo(
     () =>
       departments
+        .filter((department) => String(department.school_id_number) === String(fixedSchoolId))
         .flatMap((department) =>
           (department.subjects || []).map((subject) => ({
             ...subject,
@@ -166,7 +184,7 @@ function UsersList() {
           if (departmentComparison !== 0) return departmentComparison;
           return String(a.subject_name || '').localeCompare(String(b.subject_name || ''));
         }),
-    [departments]
+    [departments, fixedSchoolId]
   );
 
   useEffect(() => {
@@ -245,6 +263,11 @@ function UsersList() {
 
   const openSubjectAssignment = async (teacher) => {
     if (!teacher?.user_id) return;
+
+    if (subjectAssignment.teacher?.user_id === teacher.user_id) {
+      closeSubjectAssignment();
+      return;
+    }
 
     setSubjectAssignment((prev) => ({
       ...prev,
@@ -338,19 +361,6 @@ function UsersList() {
     }
   };
 
-  const handleSchoolChange = (value) => {
-    const nextDepartments = departments.filter(
-      (department) => String(department.school_id_number) === String(value)
-    );
-
-    setCreateForm((prev) => ({
-      ...prev,
-      school_id_number: value,
-      department_id: nextDepartments[0] ? String(nextDepartments[0].department_id) : '',
-      subject_ids: [],
-    }));
-  };
-
   const handleCreateUser = async () => {
     const payload = {
       ...createForm,
@@ -409,6 +419,7 @@ function UsersList() {
 
   const renderUsersTable = (rows, emptyMessage, options = {}) => {
     const showSubjectActions = Boolean(options.showSubjectActions);
+    const columnCount = showSubjectActions ? 6 : 5;
 
     if (rows.length === 0) {
       return <p className="py-6 text-center text-sm text-muted-foreground">{emptyMessage}</p>;
@@ -430,48 +441,169 @@ function UsersList() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((user) => (
-              <tr key={user.user_id} className="border-t border-amber-100 hover:bg-amber-50/40">
-                <td className="px-4 py-3 font-medium text-gray-900">{formatName(user)}</td>
-                <td className="px-4 py-3 text-gray-700">{user.email || 'N/A'}</td>
-                <td className="px-4 py-3 text-gray-700">{formatRole(user.role)}</td>
-                <td className="px-4 py-3 text-gray-700">{user.department_name || 'N/A'}</td>
-                <td className="px-4 py-3">
-                  <div className="flex flex-wrap gap-2">
-                    {user.is_approved ? (
-                      <Badge className="border border-emerald-300 bg-emerald-100 text-emerald-800">
-                        Approved
-                      </Badge>
-                    ) : (
-                      <Badge className="border border-amber-300 bg-amber-100 text-amber-900">
-                        Pending Approval
-                      </Badge>
+            {rows.map((user) => {
+              const isSubjectAssignmentOpen =
+                showSubjectActions && subjectAssignment.teacher?.user_id === user.user_id;
+
+              return (
+                <React.Fragment key={user.user_id}>
+                  <tr className="border-t border-amber-100 hover:bg-amber-50/40">
+                    <td className="px-4 py-3 font-medium text-gray-900">{formatName(user)}</td>
+                    <td className="px-4 py-3 text-gray-700">{user.email || 'N/A'}</td>
+                    <td className="px-4 py-3 text-gray-700">{formatRole(user.role)}</td>
+                    <td className="px-4 py-3 text-gray-700">{user.department_name || 'N/A'}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        {user.is_approved ? (
+                          <Badge className="border border-emerald-300 bg-emerald-100 text-emerald-800">
+                            Approved
+                          </Badge>
+                        ) : (
+                          <Badge className="border border-amber-300 bg-amber-100 text-amber-900">
+                            Pending Approval
+                          </Badge>
+                        )}
+                        {user.is_active ? (
+                          <Badge className="border border-sky-300 bg-sky-100 text-sky-800">
+                            Active
+                          </Badge>
+                        ) : (
+                          <Badge className="border border-slate-300 bg-slate-100 text-slate-700">
+                            Inactive
+                          </Badge>
+                        )}
+                      </div>
+                    </td>
+                    {showSubjectActions && (
+                      <td className="px-4 py-3 text-right">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => openSubjectAssignment(user)}
+                        >
+                          {isSubjectAssignmentOpen ? 'Hide Subjects' : 'Assign Subjects'}
+                        </Button>
+                      </td>
                     )}
-                    {user.is_active ? (
-                      <Badge className="border border-sky-300 bg-sky-100 text-sky-800">
-                        Active
-                      </Badge>
-                    ) : (
-                      <Badge className="border border-slate-300 bg-slate-100 text-slate-700">
-                        Inactive
-                      </Badge>
-                    )}
-                  </div>
-                </td>
-                {showSubjectActions && (
-                  <td className="px-4 py-3 text-right">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => openSubjectAssignment(user)}
-                    >
-                      {subjectAssignment.teacher?.user_id === user.user_id ? 'Manage Subjects' : 'Assign Subjects'}
-                    </Button>
-                  </td>
-                )}
-              </tr>
-            ))}
+                  </tr>
+
+                  {isSubjectAssignmentOpen && (
+                    <tr className="border-t border-amber-100 bg-amber-50/20">
+                      <td colSpan={columnCount} className="px-4 py-4">
+                        <div className="space-y-4 rounded-xl border border-amber-200 bg-white p-4 shadow-sm">
+                          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                            <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                                Teacher
+                              </p>
+                              <p className="mt-1 font-semibold text-gray-900">
+                                {formatName(subjectAssignment.teacher)}
+                              </p>
+                              <p className="text-sm text-gray-600">
+                                {subjectAssignment.teacher?.email || 'No email'}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                                Department
+                              </p>
+                              <p className="mt-1 font-semibold text-gray-900">
+                                {subjectAssignment.departmentName ||
+                                  subjectAssignment.teacher?.department_name ||
+                                  'No department'}
+                              </p>
+                            </div>
+                            <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                                Assigned
+                              </p>
+                              <p className="mt-1 font-semibold text-gray-900">
+                                {subjectAssignment.selectedSubjectIds.length} subject(s)
+                              </p>
+                            </div>
+                          </div>
+
+                          {subjectAssignment.loading ? (
+                            <div className="flex items-center justify-center py-10 text-muted-foreground">
+                              <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                              Loading teacher subjects...
+                            </div>
+                          ) : subjectAssignment.availableSubjects.length === 0 ? (
+                            <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-4 text-sm text-gray-700">
+                              No subjects are available yet. Create subjects first, then come back
+                              here to assign them.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                              {subjectAssignment.availableSubjects.map((subject) => (
+                                <label
+                                  key={subject.subject_id}
+                                  className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-100 bg-white px-4 py-3 hover:bg-amber-50/40"
+                                >
+                                  <Checkbox
+                                    checked={subjectAssignment.selectedSubjectIds.includes(subject.subject_id)}
+                                    onCheckedChange={(checked) =>
+                                      toggleSubjectSelection(subject.subject_id, checked === true)
+                                    }
+                                    disabled={subjectAssignment.saving}
+                                  />
+                                  <div>
+                                    <p className="font-medium text-gray-900">{subject.subject_name}</p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {subject.department_name ||
+                                        subjectAssignment.departmentName ||
+                                        'Department subject'}
+                                    </p>
+                                  </div>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
+                            <div className="text-sm text-gray-700">
+                              Selected subjects are the only ones this teacher will see for uploads
+                              and exam creation.
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={() =>
+                                  setSubjectAssignment((prev) => ({ ...prev, selectedSubjectIds: [] }))
+                                }
+                                disabled={subjectAssignment.loading || subjectAssignment.saving}
+                              >
+                                Clear
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={closeSubjectAssignment}
+                                disabled={subjectAssignment.saving}
+                              >
+                                Close
+                              </Button>
+                              <Button
+                                type="button"
+                                onClick={handleSaveSubjectAssignments}
+                                disabled={subjectAssignment.loading || subjectAssignment.saving}
+                              >
+                                {subjectAssignment.saving ? (
+                                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                ) : null}
+                                Save Subjects
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -540,23 +672,17 @@ function UsersList() {
 
             <div className="space-y-2">
               <Label htmlFor="school">School</Label>
-              <select
+              <Input
                 id="school"
-                className={selectClassName}
-                value={createForm.school_id_number}
-                onChange={(e) => handleSchoolChange(e.target.value)}
-                disabled={creatingUser || lookupLoading || schools.length === 0}
-              >
-                {schools.length === 0 ? (
-                  <option value="">No schools available</option>
-                ) : (
-                  schools.map((school) => (
-                    <option key={school.school_id_number} value={school.school_id_number}>
-                      {school.school_name}
-                    </option>
-                  ))
-                )}
-              </select>
+                value={fixedSchool?.school_name || FIXED_SCHOOL_NAME}
+                readOnly
+                disabled={creatingUser || lookupLoading}
+              />
+              <p className={`text-xs ${fixedSchool ? 'text-muted-foreground' : 'text-red-600'}`}>
+                {fixedSchool
+                  ? 'School is locked to Pambayang Dalubhasaan ng Marilao for account creation.'
+                  : 'Pambayang Dalubhasaan ng Marilao was not found in the school list.'}
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -710,7 +836,7 @@ function UsersList() {
               disabled={
                 creatingUser ||
                 lookupLoading ||
-                schools.length === 0 ||
+                !fixedSchool ||
                 filteredDepartments.length === 0 ||
                 (normalizeRole(createForm.role) === 'teacher' &&
                   (createForm.subject_ids || []).length === 0)
@@ -726,108 +852,6 @@ function UsersList() {
           </div>
         </CardContent>
       </Card>
-
-      {subjectAssignment.teacher && (
-        <Card className="border border-amber-200 bg-white shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-xl text-gray-900">Assign Teacher Subjects</CardTitle>
-            <CardDescription>
-              Admin controls which subjects this teacher can use in Upload Module and Create Exam
-              across all departments.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Teacher</p>
-                <p className="mt-1 font-semibold text-gray-900">{formatName(subjectAssignment.teacher)}</p>
-                <p className="text-sm text-gray-600">{subjectAssignment.teacher.email || 'No email'}</p>
-              </div>
-              <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Department</p>
-                <p className="mt-1 font-semibold text-gray-900">
-                  {subjectAssignment.departmentName || subjectAssignment.teacher.department_name || 'No department'}
-                </p>
-              </div>
-              <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
-                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Assigned</p>
-                <p className="mt-1 font-semibold text-gray-900">
-                  {subjectAssignment.selectedSubjectIds.length} subject(s)
-                </p>
-              </div>
-            </div>
-
-            {subjectAssignment.loading ? (
-              <div className="flex items-center justify-center py-10 text-muted-foreground">
-                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                Loading teacher subjects...
-              </div>
-            ) : subjectAssignment.availableSubjects.length === 0 ? (
-              <div className="rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-4 text-sm text-gray-700">
-                No subjects are available yet. Create subjects first, then come back here to assign
-                them.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {subjectAssignment.availableSubjects.map((subject) => (
-                  <label
-                    key={subject.subject_id}
-                    className="flex cursor-pointer items-start gap-3 rounded-lg border border-amber-100 bg-white px-4 py-3 hover:bg-amber-50/40"
-                  >
-                    <Checkbox
-                      checked={subjectAssignment.selectedSubjectIds.includes(subject.subject_id)}
-                      onCheckedChange={(checked) => toggleSubjectSelection(subject.subject_id, checked === true)}
-                      disabled={subjectAssignment.saving}
-                    />
-                    <div>
-                      <p className="font-medium text-gray-900">{subject.subject_name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {subject.department_name || subjectAssignment.departmentName || 'Department subject'}
-                      </p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-100 bg-amber-50/40 px-4 py-3">
-              <div className="text-sm text-gray-700">
-                Selected subjects are the only ones this teacher will see for uploads and exam creation.
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setSubjectAssignment((prev) => ({ ...prev, selectedSubjectIds: [] }))
-                  }
-                  disabled={subjectAssignment.loading || subjectAssignment.saving}
-                >
-                  Clear
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeSubjectAssignment}
-                  disabled={subjectAssignment.saving}
-                >
-                  Close
-                </Button>
-                <Button
-                  type="button"
-                  onClick={handleSaveSubjectAssignments}
-                  disabled={subjectAssignment.loading || subjectAssignment.saving}
-                >
-                  {subjectAssignment.saving ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : null}
-                  Save Subjects
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       <Card className="border border-amber-200 bg-white shadow-sm">
         <CardHeader className="pb-3">
